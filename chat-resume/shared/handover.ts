@@ -10,25 +10,33 @@ export const HANDOVER_PROVIDER_ORDER = [
   "gemini",
 ] as const;
 
-export function nextReadyProvider<T extends { provider: string; status: string; enabled: boolean }>(
+/** Other ready providers: preferred ones first, then catalog order starting after the current one. */
+export function readyHandoverProviders<T extends { provider: string; status: string; enabled: boolean }>(
   entries: readonly T[],
   currentProvider: string,
-): T | null {
+): T[] {
   const ready = entries.filter(
     (entry) => entry.enabled && entry.status === "ready" && entry.provider !== currentProvider,
   );
-  if (ready.length === 0) return null;
+  const ordered: T[] = [];
   for (const provider of HANDOVER_PROVIDER_ORDER) {
     const match = ready.find((entry) => entry.provider === provider);
-    if (match) return match;
+    if (match) ordered.push(match);
   }
   const currentIndex = entries.findIndex((entry) => entry.provider === currentProvider);
   for (let offset = 1; offset <= entries.length; offset += 1) {
     const index = currentIndex < 0 ? offset - 1 : (currentIndex + offset) % entries.length;
     const entry = entries[index];
-    if (entry && ready.includes(entry)) return entry;
+    if (entry && ready.includes(entry) && !ordered.includes(entry)) ordered.push(entry);
   }
-  return ready[0] ?? null;
+  return ordered;
+}
+
+export function nextReadyProvider<T extends { provider: string; status: string; enabled: boolean }>(
+  entries: readonly T[],
+  currentProvider: string,
+): T | null {
+  return readyHandoverProviders(entries, currentProvider)[0] ?? null;
 }
 
 export interface SelectOption {
