@@ -1,0 +1,4 @@
+{
+  "id": "skills-usage",
+  "requirements": { "paseo": ">=0.8.0-0" }
+}

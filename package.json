@@ -11,7 +11,8 @@
     "agent-heartbeats",
     "schedule-runs",
     "agents-history",
-    "session-usage"
+    "session-usage",
+    "skills-usage"
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces"
