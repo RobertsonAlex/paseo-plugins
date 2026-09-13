@@ -48,16 +48,24 @@ export const DASH_GROUP_ICONS: Record<DashGroup, string> = {
   closed: "GitMerge",
 };
 
-/** Quick actions live only on the two calm groups; everything else navigates. */
+/**
+ * Quick actions live on the groups a glance can settle: the calm ones, plus Unread and Approved,
+ * where the row itself says whether the work is done with. Groups with live activity navigate.
+ */
 export function quickActionsFor(group: DashGroup): readonly DashQuickAction[] {
-  if (group === "closed") return CLOSED_ACTIONS;
+  if (group === "closed" || group === "unread" || group === "accepted") return ARCHIVE_ONLY;
   if (group === "idle") return IDLE_ACTIONS;
   return NO_ACTIONS;
 }
 
+/** Groups whose header offers archiving every workspace in it at once. */
+export function canArchiveGroup(group: DashGroup): boolean {
+  return group === "unread" || group === "accepted";
+}
+
 export type DashQuickAction = "archive" | "markUnread";
 const NO_ACTIONS: readonly DashQuickAction[] = [];
-const CLOSED_ACTIONS: readonly DashQuickAction[] = ["archive"];
+const ARCHIVE_ONLY: readonly DashQuickAction[] = ["archive"];
 const IDLE_ACTIONS: readonly DashQuickAction[] = ["markUnread", "archive"];
 
 export const AGENT_ACTIVITIES = ["waiting", "unread", "working", "failing", "idle"] as const;

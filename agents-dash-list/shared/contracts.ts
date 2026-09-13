@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { DASH_GROUPS } from "./model";
 
 /** The ten label colors Paseo's workspace-label catalog can assign. */
 export const WORKSPACE_LABEL_COLORS = [
@@ -74,4 +75,31 @@ export const setUnreadMark = defineRpc({
   name: "agents-dash-list.unread.set",
   input: z.object({ workspaceId: z.string().min(1), unread: z.boolean() }),
   output: UnreadMarksSchema,
+});
+
+/**
+ * Viewing preferences the dash keeps between opens: which projects are shown and which groups
+ * are folded shut. Stored per daemon next to the unread marks, so they follow the host the dash
+ * is looking at.
+ */
+export const DashSettingsSchema = z.object({
+  /** Project IDs to show; empty means every project. */
+  projectIds: z.array(z.string().min(1)).max(500),
+  collapsedGroups: z.array(z.enum(DASH_GROUPS)).max(DASH_GROUPS.length),
+});
+
+export type DashSettings = z.infer<typeof DashSettingsSchema>;
+
+export const DEFAULT_DASH_SETTINGS: DashSettings = { projectIds: [], collapsedGroups: [] };
+
+export const getDashSettings = defineRpc({
+  name: "agents-dash-list.settings.get",
+  input: z.object({}),
+  output: DashSettingsSchema,
+});
+
+export const setDashSettings = defineRpc({
+  name: "agents-dash-list.settings.set",
+  input: DashSettingsSchema,
+  output: DashSettingsSchema,
 });
