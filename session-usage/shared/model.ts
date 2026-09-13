@@ -13,11 +13,11 @@ export const METRICS: Record<DisplayMetric, { label: string; unit: Unit; descrip
   outputTokens: { label: "Output tokens", unit: "number", description: "Output tokens, including reasoning where reported by the provider." },
   reasoningTokens: { label: "Reasoning tokens", unit: "number", description: "Reported reasoning/thinking tokens. A subset of output; unknown when omitted." },
   cacheRate: { label: "Cache hit %", unit: "percent", description: "Cache reads / total input. Aggregates use the ratio of sums for sessions with both values." },
-  requests: { label: "Model responses", unit: "number", description: "Unique Claude message IDs or Codex usage responses. Legacy Codex: observed nonzero cumulative increments." },
+  requests: { label: "Model responses", unit: "number", description: "Unique Claude message IDs, Codex usage responses, or OpenCode/Kilo and Devin replies with usage. Legacy Codex: observed nonzero cumulative increments." },
   userMessages: { label: "User messages", unit: "number", description: "Recorded user messages excluding tool results. May include injected instructions and automated prompts." },
-  assistantMessages: { label: "Assistant messages", unit: "number", description: "Unique Claude assistant messages or canonical Codex response messages." },
+  assistantMessages: { label: "Assistant messages", unit: "number", description: "Unique assistant messages; canonical response messages for Codex." },
   toolCalls: { label: "Tool calls", unit: "number", description: "Model-issued calls, including exec wrappers and server tools. Deduplicated by call ID." },
-  toolErrors: { label: "Tool errors", unit: "number", description: "Call outputs explicitly flagged as errors or with a nonzero exit code. Unstructured failures may be absent." },
+  toolErrors: { label: "Tool errors", unit: "number", description: "Call outputs explicitly flagged as errors, with a failed status, or with a nonzero exit code. Unstructured failures may be absent." },
   toolExecutions: { label: "Tool executions", unit: "number", description: "Codex completed command, MCP, file-change and search events, including operations inside exec. Separate from model tool calls." },
   executionErrors: { label: "Execution errors", unit: "number", description: "Codex execution events reporting failure. Separate from errors in model call outputs." },
   errorRate: { label: "Tool error %", unit: "percent", description: "Explicit tool errors / model tool calls. In-flight or unstructured outcomes are not inferred." },
@@ -25,12 +25,12 @@ export const METRICS: Record<DisplayMetric, { label: string; unit: Unit; descrip
   assistantCharacters: { label: "Assistant characters", unit: "number", description: "Unicode code points in assistant text, excluding thinking and tool arguments." },
   toolInputCharacters: { label: "Tool input chars", unit: "number", description: "Unicode code points in tool arguments, serialized when structured." },
   toolOutputCharacters: { label: "Tool output chars", unit: "number", description: "Unicode code points in recorded tool output, serialized when structured." },
-  compactions: { label: "Compactions", unit: "number", description: "Recorded Claude compact boundaries or Codex compacted records." },
-  activeMs: { label: "Recorded turn time", unit: "ms", description: "Sum of recorded completed/aborted turn durations, attributed to completion day. Unknown when not recorded." },
+  compactions: { label: "Compactions", unit: "number", description: "Recorded Claude compact boundaries, Codex compacted records, or OpenCode/Kilo compaction parts. Unknown for Devin." },
+  activeMs: { label: "Recorded turn time", unit: "ms", description: "Sum of recorded completed/aborted turn durations, attributed to completion day. OpenCode/Kilo turns run from the user message to its last completed reply. Unknown when not recorded." },
   durationMs: { label: "Session span", unit: "ms", description: "Lifetime from first to last transcript timestamp, including idle time. Always lifetime, even with a date filter." },
-  reportedCostUsd: { label: "Reported cost", unit: "usd", description: "USD explicitly recorded in Claude result events. Usually absent in native transcripts; not inferred from subscription plans." },
+  reportedCostUsd: { label: "Reported cost", unit: "usd", description: "USD recorded by the provider: Claude result events or OpenCode/Kilo message costs. Usually absent in Claude transcripts; not inferred from subscription plans." },
   estimatedCostUsd: { label: "Base API estimate", unit: "usd", description: "Token equivalent at standard short-context API prices dated 2026-09-07. Excludes premiums, tool fees, discounts, tax, and subscription billing. Unpriced models are unknown." },
-  bytes: { label: "Transcript size", unit: "bytes", description: "Size of the selected transcript file on disk. Always lifetime, even with a date filter." },
+  bytes: { label: "Transcript size", unit: "bytes", description: "Size of the selected transcript file on disk, or of the session's rows in a provider's SQLite store. Always lifetime, even with a date filter." },
 };
 export const DISPLAY_METRICS = Object.keys(METRICS) as DisplayMetric[];
 export const DEFAULT_COLUMNS: DisplayMetric[] = ["totalTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "cacheRate", "toolCalls", "toolErrors", "estimatedCostUsd", "activeMs", "durationMs"];
@@ -52,6 +52,13 @@ export interface Filters {
 }
 export const EMPTY_FILTERS: Filters = { query: "", providers: [], projects: [], workspaces: [], labels: [], models: [], archived: "all", source: "all", kind: "all", coverage: "all", period: "all", from: "", to: "" };
 export interface SessionRow { session: Session; buckets: Bucket[]; metrics: Metrics }
+export interface ProviderOption { id: string; label: string }
+/** Providers present in these sessions, ordered by label so each keeps its position as filters change. */
+export function providersInUse(sessions: Session[]): ProviderOption[] {
+  const labels = new Map<string, string>();
+  for (const session of sessions) if (!labels.has(session.provider)) labels.set(session.provider, session.providerLabel);
+  return [...labels].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
+}
 export type SortKey = DisplayMetric | "title" | "provider" | "project" | "model" | "effort" | "startedAt" | "endedAt";
 const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const effortRank = (effort: string) => {
@@ -126,6 +133,7 @@ export function sortRows(rows: SessionRow[], key: SortKey, direction: "asc" | "d
       const effort = recordedEfforts(row.buckets).at(-1);
       return effort === undefined ? null : `${effortRank(effort)}:${effort}`;
     }
+    if (key === "provider") return row.session.providerLabel;
     if (key in METRICS) return metricValue(row, key as DisplayMetric);
     return row.session[key as "title" | "provider" | "project" | "startedAt" | "endedAt"];
   };
@@ -138,13 +146,13 @@ export function sortRows(rows: SessionRow[], key: SortKey, direction: "asc" | "d
   });
 }
 export type Grouping = "provider" | "day" | "week" | "month" | "project" | "model";
-export interface ChartGroup { id: string; label: string; claude: SessionRow[]; codex: SessionRow[] }
+export interface ChartGroup { id: string; label: string; rows: SessionRow[] }
 export function chartGroups(rows: SessionRow[], grouping: Grouping): ChartGroup[] {
   const groups = new Map<string, ChartGroup>();
   function put(id: string, label: string, row: SessionRow) {
     let group = groups.get(id);
-    if (!group) { group = { id, label, claude: [], codex: [] }; groups.set(id, group); }
-    group[row.session.provider].push(row);
+    if (!group) { group = { id, label, rows: [] }; groups.set(id, group); }
+    group.rows.push(row);
   }
   for (const row of rows) {
     if (grouping === "provider") { put("all", "Filtered sessions", row); continue; }

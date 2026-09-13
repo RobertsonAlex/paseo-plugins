@@ -45,7 +45,7 @@ function recordedEffort(value: unknown): string | null {
   return /^[a-z][a-z0-9_-]{0,31}$/.test(effort) ? effort : null;
 }
 const TOKEN_KEYS: MetricKey[] = ["inputTokens", "uncachedTokens", "cacheReadTokens", "cacheWriteTokens", "cacheWrite1hTokens", "outputTokens", "reasoningTokens"];
-const COUNT_KEYS: MetricKey[] = ["userMessages", "assistantMessages", "toolCalls", "toolErrors", "userCharacters", "assistantCharacters", "toolInputCharacters", "toolOutputCharacters", "compactions"];
+export const COUNT_KEYS: MetricKey[] =["userMessages", "assistantMessages", "toolCalls", "toolErrors", "userCharacters", "assistantCharacters", "toolInputCharacters", "toolOutputCharacters", "compactions"];
 
 export function normalizeUsage(provider: "claude" | "codex", usage: RecordValue): Metrics {
   const m = emptyMetrics();

@@ -3,15 +3,17 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, writeFile, appendFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { UsageIndex } from "./indexer";
 import { SnapshotSchema } from "../shared/schema";
 import { EMPTY_FILTERS, filterSessions } from "../shared/model";
 
+async function save(path: string, content: string) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, content); }
+
 test("index joins archived metadata, deduplicates copies, keeps missing agents and refreshes changed files", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-usage-index-"));
-  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex") };
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data") };
   const index = new UsageIndex(roots);
-  async function save(path: string, content: string) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, content); }
   try {
     await save(join(roots.paseo, "projects", "projects.json"), JSON.stringify([{ projectId: "p", rootPath: "/project", customName: "Project", archivedAt: "2026-09-01" }]));
     await save(join(roots.paseo, "projects", "workspaces.json"), JSON.stringify([{ workspaceId: "w", projectId: "p", cwd: "/worktree", title: "Workspace", labels: ["team"] }]));
@@ -36,6 +38,7 @@ test("index joins archived metadata, deduplicates copies, keeps missing agents a
     assert.equal(main.agentId, "a");
     assert.equal(main.archived, true);
     assert.equal(main.project, "Project");
+    assert.equal(main.providerLabel, "Claude");
     assert.deepEqual(main.labels, ["team"]);
     const child = snapshot.sessions.find((s) => s.kind === "subagent")!;
     assert.equal(child.parentId, main.id);
@@ -59,9 +62,110 @@ test("index joins archived metadata, deduplicates copies, keeps missing agents a
   } finally { index.dispose(); await rm(root, { recursive: true, force: true }); }
 });
 
+test("SQLite stores add OpenCode-family and Devin sessions, resolve custom provider IDs and label every provider", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-usage-stores-"));
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data") };
+  const index = new UsageIndex(roots);
+  const T0 = Date.parse("2026-09-10T12:00:00Z");
+  try {
+    await save(join(roots.paseo, "config.json"), JSON.stringify({ agents: { providers: { kilocode: { extends: "acp", label: "Kilo Code", env: { KILO_API_KEY: "SECRET_MUST_NOT_LEAK" } }, cursor: { extends: "acp", label: "Cursor" } } } }));
+    await save(join(roots.paseo, "projects", "workspaces.json"), JSON.stringify([{ workspaceId: "w", projectId: "p", cwd: "/worktree", title: "Workspace" }]));
+    const agent = (id: string, provider: string, sessionId: string) => save(join(roots.paseo, "agents", "bucket", `${id}.json`), JSON.stringify({ id, provider, cwd: "/worktree", workspaceId: "w", title: id, createdAt: "2026-09-10", persistence: { sessionId, nativeHandle: sessionId } }));
+    await Promise.all([agent("kilo-agent", "kilocode", "ses_linked"), agent("devin-agent", "devin", "shared-jargon"), agent("cursor-agent", "cursor", "cursor-session")]);
+
+    await mkdir(join(roots.data, "kilo"), { recursive: true });
+    const kiloPath = join(roots.data, "kilo", "kilo.db");
+    const kilo = new DatabaseSync(kiloPath);
+    kilo.exec(`CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE TABLE credential (id TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO credential VALUES ('c', 'SECRET_MUST_NOT_LEAK');`);
+    const insertSession = kilo.prepare("INSERT INTO session VALUES (?, 'project', ?, ?, ?, ?, ?, ?)");
+    insertSession.run("ses_linked", null, "/worktree", "Linked", T0, T0 + 9000, null);
+    insertSession.run("ses_outside", null, "/outside", "Outside", T0, T0, T0);
+    insertSession.run("ses_empty", null, "/outside", "Empty", T0, T0, null);
+    insertSession.run("ses_child", "ses_linked", "/worktree", "Child", T0, T0, null);
+    const insertMessage = (db: DatabaseSync, id: string, session: string, created: number, data: object) => db.prepare("INSERT INTO message VALUES (?, ?, ?, ?, ?)").run(id, session, created, created, JSON.stringify(data));
+    const part = (id: string, messageId: string, data: object) => kilo.prepare("INSERT INTO part VALUES (?, ?, 'ses_linked', ?, ?, ?)").run(id, messageId, T0, T0, JSON.stringify(data));
+    const reply = (created: number) => ({ role: "assistant", parentID: "u1", modelID: "anthropic/claude-sonnet-4.5", providerID: "kilo", cost: 0.01, tokens: { input: 10, output: 20, reasoning: 5, cache: { read: 100, write: 50 } }, time: { created, completed: created + 4000 } });
+    insertMessage(kilo, "u1", "ses_linked", T0, { role: "user", time: { created: T0 }, model: { providerID: "anthropic", modelID: "claude-sonnet-4.5" } });
+    insertMessage(kilo, "a1", "ses_linked", T0 + 1000, reply(T0 + 1000));
+    part("p1", "u1", { type: "text", text: "PRIVATE_TRANSCRIPT_TEXT" });
+    part("p2", "a1", { type: "text", text: "hello" });
+    part("p3", "a1", { type: "tool", tool: "bash", callID: "call", state: { status: "error", input: { command: "PRIVATE_TOOL_INPUT" }, error: "boom" } });
+    part("p4", "a1", { type: "compaction", auto: true });
+    insertMessage(kilo, "u2", "ses_outside", T0, { role: "user", time: { created: T0 }, model: { modelID: "kilo-auto/frontier" } });
+    insertMessage(kilo, "c1", "ses_child", T0, { ...reply(T0), parentID: "none" });
+    kilo.close();
+
+    await mkdir(join(roots.data, "devin", "cli"), { recursive: true });
+    const devin = new DatabaseSync(join(roots.data, "devin", "cli", "sessions.db"));
+    devin.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT, title TEXT, created_at INTEGER, last_activity_at INTEGER);
+      CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT);`);
+    devin.prepare("INSERT INTO sessions VALUES ('shared-jargon', '/worktree', 'Devin', ?, ?)").run(T0 / 1000, T0 / 1000 + 60);
+    const node = (nodeId: number, chat: object) => devin.prepare("INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('shared-jargon', ?, ?, ?)").run(nodeId, JSON.stringify(chat), T0 / 1000);
+    const at = (seconds: number) => new Date(T0 + seconds * 1000).toISOString();
+    const assistant = { message_id: "m2", role: "assistant", content: "hi", tool_calls: [{ id: "call_1", name: "skill", arguments: { name: "PRIVATE_TOOL_INPUT" } }], metadata: { created_at: at(2), generation_model: "gpt-6-astra-medium", telemetry: { source: "assistant" }, metrics: { input_tokens: 3, output_tokens: 7, cache_read_tokens: 1000, cache_creation_tokens: 200 } } };
+    node(0, { message_id: "m0", role: "system", content: "PRIVATE_TRANSCRIPT_TEXT", metadata: { created_at: at(0), telemetry: { source: "sysprompt" } } });
+    node(1, { message_id: "m1", role: "user", content: "PRIVATE_TRANSCRIPT_TEXT", metadata: { created_at: at(1), is_user_input: true, telemetry: { source: "user" } } });
+    node(2, assistant);
+    node(3, { message_id: "m3", role: "tool", tool_call_id: "call_1", content: "failed", metadata: { created_at: at(3), extensions: { "chisel/tool_result_meta": { success: false } } } });
+    node(4, { message_id: "m4", role: "user", content: "", metadata: { created_at: at(4), telemetry: { source: "cache_keepalive" } } });
+    node(5, assistant); // Compaction copy of the same message.
+    devin.close();
+
+    index.snapshot();
+    const snapshot = await index.settled();
+    SnapshotSchema.parse(snapshot);
+    const serialized = JSON.stringify(snapshot);
+    for (const secret of ["SECRET_MUST_NOT_LEAK", "PRIVATE_TRANSCRIPT_TEXT", "PRIVATE_TOOL_INPUT"]) assert.ok(!serialized.includes(secret), secret);
+    assert.deepEqual(snapshot.warnings, []);
+    assert.deepEqual(snapshot.sessions.map((s) => s.id).sort(), ["cursor:cursor-session", "devin:shared-jargon", "kilocode:ses_child", "kilocode:ses_linked", "kilocode:ses_outside"]);
+    const row = (sessions: typeof snapshot.sessions, id: string) => filterSessions(sessions, EMPTY_FILTERS).find((r) => r.session.id === id)!;
+
+    const linked = row(snapshot.sessions, "kilocode:ses_linked");
+    assert.equal(linked.session.providerLabel, "Kilo Code");
+    assert.equal(linked.session.agentId, "kilo-agent");
+    assert.equal(linked.session.workspaceId, "w");
+    assert.equal(linked.session.coverage, "available");
+    const { inputTokens, uncachedTokens, outputTokens, reasoningTokens, requests, userMessages, assistantMessages, toolCalls, toolErrors, toolOutputCharacters, compactions, userCharacters, assistantCharacters, activeMs, reportedCostUsd } = linked.metrics;
+    assert.deepEqual({ inputTokens, uncachedTokens, outputTokens, reasoningTokens, requests, userMessages, assistantMessages, toolCalls, toolErrors, toolOutputCharacters, compactions, userCharacters, assistantCharacters, activeMs, reportedCostUsd },
+      { inputTokens: 160, uncachedTokens: 10, outputTokens: 25, reasoningTokens: 5, requests: 1, userMessages: 1, assistantMessages: 1, toolCalls: 1, toolErrors: 1, toolOutputCharacters: 4, compactions: 1, userCharacters: 23, assistantCharacters: 5, activeMs: 5000, reportedCostUsd: 0.01 });
+    assert.ok(Math.abs(linked.metrics.estimatedCostUsd! - 622.5 / 1e6) < 1e-12);
+    assert.deepEqual(linked.buckets.flatMap((b) => Object.entries(b.tools)), [["bash", 1]]);
+    const outside = row(snapshot.sessions, "kilocode:ses_outside").session;
+    assert.equal(outside.providerLabel, "Kilo Code");
+    assert.equal(outside.archived, true);
+    const child = row(snapshot.sessions, "kilocode:ses_child").session;
+    assert.equal(child.kind, "subagent");
+    assert.equal(child.parentId, "kilocode:ses_linked");
+
+    const devinRow = row(snapshot.sessions, "devin:shared-jargon");
+    assert.equal(devinRow.session.providerLabel, "Devin");
+    assert.equal(devinRow.session.agentId, "devin-agent");
+    assert.deepEqual(devinRow.buckets.map((b) => [b.model, b.effort]), [["gpt-6-astra", "medium"], ["unknown", null]]);
+    const d = devinRow.metrics;
+    assert.deepEqual([d.inputTokens, d.outputTokens, d.requests, d.userMessages, d.assistantMessages, d.toolCalls, d.toolErrors, d.userCharacters, d.compactions, d.activeMs], [1203, 7, 1, 1, 1, 1, 1, 23, null, null]);
+    assert.ok(Math.abs(d.estimatedCostUsd! - 3880 / 1e6) < 1e-12);
+
+    const cursor = row(snapshot.sessions, "cursor:cursor-session").session;
+    assert.equal(cursor.providerLabel, "Cursor");
+    assert.equal(cursor.coverage, "missing");
+    assert.match(cursor.warnings[0], /no local usage records/);
+
+    const reopened = new DatabaseSync(kiloPath);
+    insertMessage(reopened, "a2", "ses_linked", T0 + 6000, reply(T0 + 6000));
+    reopened.close();
+    index.snapshot(true);
+    const refreshed = await index.settled();
+    assert.equal(row(refreshed.sessions, "kilocode:ses_linked").metrics.inputTokens, 320);
+  } finally { index.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("unavailable provider directories produce an empty completed scan without mutating the host", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-usage-empty-"));
-  const index = new UsageIndex({ paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex") });
+  const index = new UsageIndex({ paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data") });
   try {
     index.snapshot();
     const snapshot = await index.settled();

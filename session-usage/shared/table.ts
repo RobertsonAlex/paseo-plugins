@@ -26,13 +26,13 @@ export function groupSessionRows(rows: SessionRow[], grouping: Exclude<TableGrou
   }
   if (["day", "week", "month", "model"].includes(grouping)) {
     for (const group of chartGroups(rows, grouping as "day" | "week" | "month" | "model")) {
-      for (const row of [...group.claude, ...group.codex]) put(group.id, group.id === "unknown" ? `Unknown ${grouping}` : group.label, row);
+      for (const row of group.rows) put(group.id, group.id === "unknown" ? `Unknown ${grouping}` : group.label, row);
     }
     // Missing transcripts still belong in the table, even without dated/model activity.
     for (const row of rows) if (!row.buckets.length) put("unknown", `Unknown ${grouping}`, row);
   } else {
     for (const row of rows) {
-      if (grouping === "provider") put(row.session.provider, row.session.provider === "claude" ? "Claude" : "Codex", row);
+      if (grouping === "provider") put(row.session.provider, row.session.providerLabel, row);
       if (grouping === "project") put(row.session.projectId ?? "unknown", row.session.project, row);
       if (grouping === "workspace") put(row.session.workspaceId ?? "unknown", row.session.workspace || "Unknown workspace", row);
       if (grouping === "label") {

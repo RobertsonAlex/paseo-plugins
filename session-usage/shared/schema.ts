@@ -49,7 +49,8 @@ export type Bucket = z.infer<typeof BucketSchema>;
 export const SessionSchema = z.object({
   id: z.string(),
   nativeId: z.string(),
-  provider: z.enum(["claude", "codex"]),
+  provider: z.string(), // Paseo provider ID, including custom providers.
+  providerLabel: z.string(),
   kind: z.enum(["main", "subagent"]),
   parentId: z.string().nullable(),
   title: z.string(),

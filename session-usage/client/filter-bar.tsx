@@ -24,7 +24,7 @@ export function FilterBar({ sessions, filters, onChange, theme, compact }: { ses
   return <View style={{ gap: 10 }}>
     <TextInput value={filters.query} onChangeText={(query) => onChange({ ...filters, query })} placeholder="Search sessions, projects, branches or models…" placeholderTextColor={theme.colors.foregroundMuted} accessibilityLabel="Search session metadata" style={input} />
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-      {multi("providers", "Provider", options(sessions.map((s) => ({ id: s.provider, label: s.provider === "claude" ? "Claude" : "Codex" }))))}
+      {multi("providers", "Provider", options(sessions.map((s) => ({ id: s.provider, label: s.providerLabel }))))}
       {multi("projects", "Project", options(sessions.map((s) => ({ id: s.projectId ?? "unknown", label: s.project }))))}
       {single("period", "Period", [["all", "Any time"], ["today", "Today (UTC)"], ["7d", "Last 7 days (UTC)"], ["30d", "Last 30 days (UTC)"], ["90d", "Last 90 days (UTC)"], ["custom", "Custom dates"]])}
       {single("archived", "Archived", [["all", "All"], ["active", "Active only"], ["archived", "Archived only"]])}
