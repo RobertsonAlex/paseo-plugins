@@ -6,10 +6,10 @@ import type {
 } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect } from "react";
+import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
 import { useHeartbeats } from "./use-heartbeats";
 
 const AGENT_PAGE_SIZE = 200;
-const AGENT_SUBSCRIPTION_ID = "agent-heartbeats-agents";
 export const HEARTBEATS_PANEL_ID = "heartbeats";
 
 /**
@@ -89,24 +89,31 @@ export function contributePills(client: PluginClientContext) {
     else upsert(update.agent);
   });
 
-  void seedAgents(client, upsert);
+  const streams = createSubscriptionKeeper();
+  void seedAgents(client, upsert, streams);
 
   return () => {
     stopped = true;
     unsubscribe();
+    streams.release();
     for (const agentId of [...pills.keys()]) remove(agentId);
   };
 }
 
-async function seedAgents(client: PluginClientContext, upsert: (agent: PaseoAgent) => void) {
+async function seedAgents(
+  client: PluginClientContext,
+  upsert: (agent: PaseoAgent) => void,
+  streams: SubscriptionKeeper,
+) {
   try {
     let cursor: string | undefined;
     do {
       const response = await client.paseo.agents.list({
         filter: { includeArchived: false },
         page: { limit: AGENT_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-        ...(cursor ? {} : { subscribe: { subscriptionId: AGENT_SUBSCRIPTION_ID } }),
+        ...(cursor ? {} : { subscribe: {} }),
       });
+      streams.keep(response);
       for (const { agent } of response.entries) upsert(agent);
       cursor = response.pageInfo.hasMore ? (response.pageInfo.nextCursor ?? undefined) : undefined;
     } while (cursor);

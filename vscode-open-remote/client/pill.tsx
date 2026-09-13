@@ -8,9 +8,9 @@ import React, { useEffect } from "react";
 import { Dimensions, Linking, Platform } from "react-native";
 import { getEditorSettings } from "../shared/settings";
 import { isMobileBrowser, isMobileLayout, remoteEditorUrl } from "../shared/url";
+import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
 
 const AGENT_PAGE_SIZE = 200;
-const AGENT_SUBSCRIPTION_ID = "vscode-open-remote-agents";
 const PROTOCOL_WINDOW_CLOSE_DELAY_MS = 750;
 const TABLET_MIN_SHORTEST_SIDE = 600;
 
@@ -199,26 +199,33 @@ export function contributeClient(client: PluginClientContext) {
     }
   });
 
-  void seedAgents(client, upsert);
+  const streams = createSubscriptionKeeper();
+  void seedAgents(client, upsert, streams);
 
   return () => {
     stopped = true;
     unsubscribe();
+    streams.release();
     dimensionsSubscription.remove();
     agents.clear();
     for (const agentId of [...pills.keys()]) remove(agentId);
   };
 }
 
-async function seedAgents(client: PluginClientContext, register: (agent: PaseoAgent) => void) {
+async function seedAgents(
+  client: PluginClientContext,
+  register: (agent: PaseoAgent) => void,
+  streams: SubscriptionKeeper,
+) {
   try {
     let cursor: string | undefined;
     do {
       const response = await client.paseo.agents.list({
         filter: { includeArchived: false },
         page: { limit: AGENT_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-        ...(cursor ? {} : { subscribe: { subscriptionId: AGENT_SUBSCRIPTION_ID } }),
+        ...(cursor ? {} : { subscribe: {} }),
       });
+      streams.keep(response);
       for (const { agent } of response.entries) register(agent);
       cursor = response.pageInfo.hasMore ? (response.pageInfo.nextCursor ?? undefined) : undefined;
     } while (cursor);

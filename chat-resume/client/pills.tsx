@@ -8,9 +8,9 @@ import {
   similarThinkingOption,
 } from "../shared/handover";
 import { CONTINUE_PROMPT, resumeAction, type ResumeAction } from "../shared/usage";
+import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
 
 const AGENT_PAGE_SIZE = 200;
-const AGENT_SUBSCRIPTION_ID = "chat-resume-agents";
 const HANDOVER_PANEL_ID = "handover-draft";
 const INSPECT_BATCH = 200;
 const FLUSH_DELAY_MS = 16;
@@ -384,11 +384,13 @@ export function contributePills(client: PluginClientContext) {
     } else upsert(update.agent);
   });
 
-  void seedAgents(client.paseo, upsert);
+  const streams = createSubscriptionKeeper();
+  void seedAgents(client.paseo, upsert, streams);
 
   return () => {
     stopped = true;
     unsubscribe();
+    streams.release();
     if (flushTimer) clearTimeout(flushTimer);
     for (const timer of flipTimers.values()) clearTimeout(timer);
     flipTimers.clear();
@@ -398,15 +400,20 @@ export function contributePills(client: PluginClientContext) {
   };
 }
 
-async function seedAgents(paseo: PaseoApi, upsert: (agent: PaseoAgent) => void) {
+async function seedAgents(
+  paseo: PaseoApi,
+  upsert: (agent: PaseoAgent) => void,
+  streams: SubscriptionKeeper,
+) {
   try {
     let cursor: string | undefined;
     do {
       const response = await paseo.agents.list({
         filter: { includeArchived: false },
         page: { limit: AGENT_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-        ...(cursor ? {} : { subscribe: { subscriptionId: AGENT_SUBSCRIPTION_ID } }),
+        ...(cursor ? {} : { subscribe: {} }),
       });
+      streams.keep(response);
       for (const { agent } of response.entries) upsert(agent);
       cursor = response.pageInfo.hasMore ? (response.pageInfo.nextCursor ?? undefined) : undefined;
     } while (cursor);
