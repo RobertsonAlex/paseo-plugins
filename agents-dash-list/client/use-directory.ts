@@ -4,18 +4,43 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 /**
  * Live mirror of one host's workspace and agent directories.
  *
- * The daemon only streams directory updates to a connection that already asked for them, so the
- * hook registers both `subscribe` handlers before seeding and passes `subscribe` on the first
- * page of each paginated `list`. Entries live in refs that are mutated in place; renders are
- * driven by `version`, bumped at most once per event-loop tick so a burst of updates costs one
- * render instead of one render per event.
+ * The daemon only streams directory updates to a connection that already asked for them, and the
+ * SDK's `subscribe` handlers only relay updates from an open `list({ subscribe })` stream, so the
+ * hook registers both handlers before seeding and passes an empty `subscribe` on the first page
+ * of each paginated `list`. The host assigns the subscription ID; passing one is rejected. The
+ * stream handles the `list` returns are released when the effect ends so a refresh or host switch
+ * does not leave the daemon streaming into nothing. Entries live in refs that are mutated in
+ * place; renders are driven by `version`, bumped at most once per event-loop tick so a burst of
+ * updates costs one render instead of one render per event.
  */
 
 const PAGE_LIMIT = 200;
 /** Ceiling on seed pages so a huge directory cannot spin forever. */
 const MAX_PAGES = 10;
-const WORKSPACES_SUBSCRIPTION_ID = "agents-dash-list-workspaces";
-const AGENTS_SUBSCRIPTION_ID = "agents-dash-list-agents";
+
+/**
+ * Stream handle a `list({ subscribe: {} })` call returns. The pinned SDK types omit it, so it is
+ * read structurally from the result.
+ */
+interface DirectorySubscription {
+  release(): Promise<void>;
+}
+
+function takeSubscription(result: object): DirectorySubscription | null {
+  const candidate = (result as { subscription?: unknown }).subscription;
+  if (
+    candidate &&
+    typeof candidate === "object" &&
+    typeof (candidate as DirectorySubscription).release === "function"
+  ) {
+    return candidate as DirectorySubscription;
+  }
+  return null;
+}
+
+function releaseQuietly(subscription: DirectorySubscription): void {
+  void subscription.release().catch(() => undefined);
+}
 
 export type DashDirectoryStatus = "loading" | "ready" | "error";
 
@@ -105,6 +130,14 @@ export function useDashDirectory(paseo: PaseoApi, hostId: string): DashDirectory
 
   useEffect(() => {
     let stopped = false;
+    const subscriptions: DirectorySubscription[] = [];
+    /** Keeps a stream handle for cleanup, or drops it at once if cleanup already ran. */
+    const keepSubscription = (result: object) => {
+      const subscription = takeSubscription(result);
+      if (!subscription) return;
+      if (stopped) releaseQuietly(subscription);
+      else subscriptions.push(subscription);
+    };
     const workspaces = new Map<string, PaseoWorkspace>();
     const agents = new Map<string, PaseoAgent>();
     workspacesRef.current = workspaces;
@@ -139,10 +172,9 @@ export function useDashDirectory(paseo: PaseoApi, hostId: string): DashDirectory
         const result = await paseo.workspaces.list({
           sort: [{ key: "activity_at", direction: "desc" }],
           page: { limit: PAGE_LIMIT, cursor },
-          ...(page === 0
-            ? { subscribe: { subscriptionId: WORKSPACES_SUBSCRIPTION_ID } }
-            : {}),
+          ...(page === 0 ? { subscribe: {} } : {}),
         });
+        keepSubscription(result);
         if (stopped) return false;
         for (const workspace of result.entries) {
           // A streamed update that landed mid-seed is newer than this snapshot page.
@@ -163,8 +195,9 @@ export function useDashDirectory(paseo: PaseoApi, hostId: string): DashDirectory
           filter: { includeArchived: false },
           sort: [{ key: "updated_at", direction: "desc" }],
           page: { limit: PAGE_LIMIT, cursor },
-          ...(page === 0 ? { subscribe: { subscriptionId: AGENTS_SUBSCRIPTION_ID } } : {}),
+          ...(page === 0 ? { subscribe: {} } : {}),
         });
+        keepSubscription(result);
         if (stopped) return;
         for (const entry of result.entries) {
           applyAgent(agents, entry.agent);
@@ -193,6 +226,7 @@ export function useDashDirectory(paseo: PaseoApi, hostId: string): DashDirectory
       stopped = true;
       unsubscribeWorkspaces();
       unsubscribeAgents();
+      for (const subscription of subscriptions.splice(0)) releaseQuietly(subscription);
     };
   }, [paseo, hostId, reloadToken, scheduleBump]);
 
