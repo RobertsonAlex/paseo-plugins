@@ -1,17 +1,12 @@
 import { type PluginClientContext } from "@getpaseo/plugin/client";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import { inspectUsageRpc, scheduleResumeRpc } from "../shared/contracts";
-import {
-  HANDOVER_SOURCE_LABEL,
-  nextReadyProvider,
-  similarMode,
-  similarThinkingOption,
-} from "../shared/handover";
+import { HANDOVER_SOURCE_LABEL } from "../shared/handover";
 import { CONTINUE_PROMPT, resumeAction, type ResumeAction } from "../shared/usage";
+import { HandoverModal } from "./handover-modal";
 import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
 
 const AGENT_PAGE_SIZE = 200;
-const HANDOVER_PANEL_ID = "handover-draft";
 const INSPECT_BATCH = 200;
 const FLUSH_DELAY_MS = 16;
 const RETRY_DELAY_MS = 800;
@@ -32,61 +27,6 @@ interface UsageInspection {
   resetAt: string | null;
 }
 
-async function createHandoverAgent(client: PluginClientContext, sourceAgentId: string) {
-  const refreshed = await client.paseo.agents.ref(sourceAgentId).refresh();
-  const source = refreshed?.agent;
-  if (!source || !source.workspaceId) throw new Error(`Agent not found: ${sourceAgentId}`);
-  const inspection = await client.rpc(inspectUsageRpc, { agentIds: [sourceAgentId] });
-  if (!inspection.inspections[0]?.exhausted) {
-    throw new Error("The agent's latest failure is no longer a usage-limit failure.");
-  }
-
-  const snapshot = await client.paseo.providers.waitForReady({ cwd: source.cwd, timeoutMs: 15_000 });
-  const provider = nextReadyProvider(snapshot.entries, source.provider);
-  if (!provider) throw new Error("No other ready provider is available.");
-
-  const modelsResult = provider.models?.length
-    ? { models: provider.models, error: null }
-    : await client.paseo.providers.listModels(provider.provider, { cwd: source.cwd });
-  if (modelsResult.error) throw new Error(modelsResult.error);
-  const selectableModels = (modelsResult.models ?? []).filter((model) => model.isSelectable !== false);
-  const model = selectableModels.find((candidate) => candidate.isDefault) ?? selectableModels[0];
-  if (!model) throw new Error(`Provider ${provider.provider} has no selectable model.`);
-
-  const modesResult = provider.modes?.length
-    ? { modes: provider.modes, error: null }
-    : await client.paseo.providers.listModes(provider.provider, { cwd: source.cwd });
-  if (modesResult.error) throw new Error(modesResult.error);
-  const modeId = similarMode(source.currentModeId, modesResult.modes ?? [], provider.defaultModeId);
-  const thinkingOptionId = similarThinkingOption(
-    source.effectiveThinkingOptionId ?? source.thinkingOptionId,
-    model.thinkingOptions ?? [],
-  ) ?? model.defaultThinkingOptionId;
-
-  const target = await client.paseo.workspaces.ref(source.workspaceId).agents.create({
-    config: {
-      provider: `${provider.provider}/${model.id}`,
-      ...(modeId ? { modeId } : {}),
-      ...(thinkingOptionId ? { thinkingOptionId } : {}),
-    },
-    title: `Handover: ${source.title ?? source.id.slice(0, 7)}`,
-    labels: { [HANDOVER_SOURCE_LABEL]: source.id },
-  });
-  const created = target.current() ?? (await target.refresh())?.agent;
-  const workspaceId = created?.workspaceId ?? target.workspaceId ?? source.workspaceId;
-  if (!workspaceId) throw new Error("The handover agent was created without a workspace.");
-  try {
-    client.openPanel(HANDOVER_PANEL_ID, {
-      workspaceId,
-      agentId: target.id,
-      location: "workspace",
-    });
-  } catch (error) {
-    console.error("[chat-resume] handover agent created but the draft panel did not open", target.id, error);
-  }
-  return target.id;
-}
-
 function canShowPills(agent: PaseoAgent): boolean {
   return Boolean(agent.workspaceId) && !agent.archivedAt && (agent.status === "idle" || agent.status === "error");
 }
@@ -98,7 +38,6 @@ export function contributePills(client: PluginClientContext) {
   const resumeScheduled = new Set<string>();
   const handoverTargets = new Map<string, string>();
   const resumePending = new Set<string>();
-  const handoverPending = new Set<string>();
   const inspectQueued = new Set<string>();
   const retried = new Set<string>();
   const pendingRetry = new Set<string>();
@@ -212,26 +151,10 @@ export function contributePills(client: PluginClientContext) {
       workspaceId: agent.workspaceId,
       agentId: agent.id,
       button: {
-        title: "Prepare a handover on the next ready provider",
+        title: "Hand over to another provider with an editable prompt",
         icon: "ArrowRightLeft",
         label: "Handover",
-        behavior: {
-          kind: "action",
-          async onPress() {
-            if (handoverPending.has(agent.id)) return;
-            handoverPending.add(agent.id);
-            try {
-              const targetId = await createHandoverAgent(client, agent.id);
-              handoverTargets.set(agent.id, targetId);
-              removePill(agent.id, "handover");
-            } catch (error) {
-              console.error("[chat-resume] could not prepare handover", agent.id, error);
-              throw error;
-            } finally {
-              handoverPending.delete(agent.id);
-            }
-          },
-        },
+        behavior: { kind: "popover", Content: HandoverModal },
       },
     });
     const state = pills.get(agent.id) ?? {};

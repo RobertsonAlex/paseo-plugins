@@ -12,14 +12,15 @@ line in the transcript, both live and when you reopen the thread later.
 - **Resume when renewed** creates one heartbeat with `maxRuns: 1`. Shown while the renewal
   time is still in the future. It runs two minutes after renewal and continues the same
   agent. Once that time arrives, the pill becomes **Continue**.
-- **Handover** creates an idle agent **in the same workspace**, preferring Claude, Codex,
-  Cursor, OpenCode, Copilot, or Gemini when those are ready, then opens an editable draft
-  with commands for recovering the source chat through the `paseo` CLI.
+- **Handover** opens a modal with an editable continuation prompt (commands for recovering the
+  source chat through the `paseo` CLI) and a choice of the other ready providers and their
+  models, preferring Claude, Codex, Cursor, OpenCode, Copilot, and Gemini. The mode and effort
+  are matched to the source agent. **Send** starts a new agent with that prompt **in the same
+  workspace**.
 
-The public plugin API does not expose the native composer draft, so the handover draft is
-hosted in an agent-scoped plugin panel. `paseo.agents.create({ cwd })` always opens a new
-workspace; handover therefore uses `workspaces.ref(id).agents.create` so the new agent stays
-in the thread you are looking at. It does not start until **Start agent** is pressed.
+`paseo.agents.create({ cwd })` always opens a new workspace; handover therefore uses
+`workspaces.ref(id).agents.create` so the new agent stays in the thread you are looking at.
+No agent is created until **Send** is pressed.
 
 Provider renewal windows are not currently exposed through the public plugin API. The
 plugin reads the latest refreshed agent error and the last transcript assistant message
@@ -30,8 +31,8 @@ for the exhaustion state and reset time, including times such as `resets 12am (E
 - Pills appear when the latest idle or error state is a usage-limit / quota-exhaustion
   message, not for context-window overflows or other failures.
 - ACP providers that keep no on-disk transcript are detected only through `lastError`.
-- The handover draft lives in a plugin panel, not the native composer. The new agent does
-  not start until **Start agent** is pressed.
+- The handover prompt is edited in a plugin modal, not the native composer, and the app stays
+  on the source agent after **Send**.
 
 ## Install
 
