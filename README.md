@@ -82,6 +82,18 @@ such as `15m`, and phrases such as `every 15 minutes`.
 
 No settings screen. The pill is per agent; the panel is an agent tab.
 
+### Skills usage
+
+[`skills-usage`](./skills-usage) — a composer **Skills** pill with the count of skills the agent has
+loaded in this chat. Press it for a searchable popover: skills used in this chat on top, then every
+skill the session reports, with a **Used** badge and an icon for where the skill lives (user,
+project, project-local, plugin, built-in). Pressing a skill puts `/skill-name` into the message
+input.
+
+No settings screen. Reads the provider's command list, the agent timeline, and the skill
+directories on the daemon machine. On phones the mention is copied to the clipboard instead of
+inserted.
+
 ### Task link
 
 [`task-link`](./task-link) — a composer pill when the agent's branch, title, or workspace name
