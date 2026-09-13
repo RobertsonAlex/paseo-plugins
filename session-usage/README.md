@@ -1,8 +1,10 @@
 # session-usage
 
 Adds **Session usage** to Paseo's sidebar and Command Center. It reads Claude Code and Codex
-transcripts on the selected daemon, including archived sessions, subagents, and sessions started
-outside Paseo, then joins them with Paseo's project, workspace, and agent records.
+transcripts and the OpenCode, Kilo, and Devin CLI session stores on the selected daemon, including
+archived sessions, subagents, and sessions started outside Paseo, then joins them with Paseo's
+project, workspace, and agent records. Agents of other providers are listed from Paseo's records
+with unknown usage.
 
 ![Session usage](./images/session-usage.png)
 
@@ -28,7 +30,8 @@ outside Paseo, then joins them with Paseo's project, workspace, and agent record
   `low` or `xhigh`). A session that changed effort lists each level; sorting uses its highest
   recorded level. Details and CSV include effort too. An em dash means effort was not recorded;
   provider defaults and current agent settings are not inferred for historical usage.
-- **Compare providers** shows Claude and Codex bars on the same zero-based scale. Choose a
+- **Compare providers** shows a bar for each provider in the filtered sessions, all on the same
+  zero-based scale. A provider keeps its color while filters change. Choose a
   metric, total or average per known session, and group by provider, day, week, month, project,
   or model. Weeks start on Monday. Large charts initially show 14 groups; **Show more** reveals
   the rest. Time charts initially show the latest groups.
@@ -46,6 +49,8 @@ outside Paseo, then joins them with Paseo's project, workspace, and agent record
 - Filters include provider, project, workspace, label, model, active/archived state, source
   (Paseo linked/outside Paseo), main/subagent, data availability, and UTC calendar dates.
   Search matches session metadata, titles, directories, branches, labels, models, and effort.
+  The provider filter lists only providers with sessions on this host, using the labels from
+  Paseo's provider settings.
   Filter, column, table grouping, and sort choices survive navigation per host until the app restarts.
 - **Export CSV** exports every filtered row in the current sort order, with all measurements
   as raw numbers (durations in milliseconds, ratios from 0 to 1, USD, bytes). On native clients
@@ -67,7 +72,9 @@ outside Paseo, then joins them with Paseo's project, workspace, and agent record
 
 **Token categories are normalized.** Claude's base input excludes cache reads/writes, so those
 categories are added to produce total input. Codex's input already includes them, so they are
-subtracted to obtain uncached input. Cache writes include the 1-hour subset. Reasoning is a subset
+subtracted to obtain uncached input. OpenCode, Kilo, and Devin CLI record uncached input and cache
+reads/writes separately, like Claude; OpenCode and Kilo record reasoning outside output, so it is
+added to output. Cache writes include the 1-hour subset. Reasoning is a subset
 of output and is never added a second time to total tokens. Character counts use Unicode code
 points, exclude images, and are not estimates of token counts.
 
@@ -92,14 +99,15 @@ The **Base API estimate** uses a fixed price table checked on **2026-09-07** aga
 Each usage record is priced using its recorded model, including separate read/write rates and
 Claude's reported 1-hour cache-write rate. Without a recorded cache TTL, writes use the 5-minute
 rate. Supported families are listed explicitly in `shared/pricing.ts`; unknown/private models
-(including `codex-auto-review`) remain unpriced. Dated model IDs use the corresponding base model
-rate. Historical usage is valued at this price snapshot, not historical prices.
+(including `codex-auto-review` and Kilo's `kilo-auto/*`) remain unpriced. Dated model IDs, router
+IDs such as `anthropic/claude-sonnet-4.5`, and Devin model names with an effort suffix use the
+corresponding base model rate. Historical usage is valued at this price snapshot, not historical prices.
 
 This is a **standard, short-context API equivalent**, not a bill or subscription allowance meter.
 It excludes priority/fast processing, long-context and regional premiums, tool fees, negotiated
 discounts, tax, and plan charges. It does not infer what you paid for Claude Pro/Max or ChatGPT.
-**Reported cost** is separate and usually unknown because native transcripts rarely contain
-the SDK's `result.total_cost_usd` events. No pricing or provider account API is contacted at runtime.
+**Reported cost** is separate. OpenCode and Kilo record a USD cost per message; Claude transcripts
+rarely contain the SDK's `result.total_cost_usd` events, and Codex and Devin CLI record none. No pricing or provider account API is contacted at runtime.
 
 ## Data sources and accounting
 
@@ -107,11 +115,31 @@ the SDK's `result.total_cost_usd` events. No pricing or provider account API is 
 | --- | --- |
 | Claude | `$CLAUDE_CONFIG_DIR/projects/**/*.jsonl`, default `~/.claude/projects`, including nested `subagents` files |
 | Codex | `$CODEX_HOME/sessions/**/rollout-*.jsonl` and `$CODEX_HOME/archived_sessions/**/rollout-*.jsonl`, default `~/.codex` |
-| Paseo | `$PASEO_HOME/projects/{projects,workspaces}.json` and `$PASEO_HOME/agents/*/*.json`, default `~/.paseo` |
+| OpenCode, Kilo | `$XDG_DATA_HOME/opencode/opencode.db` and `$XDG_DATA_HOME/kilo/kilo.db`, default `~/.local/share`; only the `session`, `message`, and `part` tables |
+| Devin CLI | `$XDG_DATA_HOME/devin/cli/sessions.db`, default `~/.local/share`; only the `sessions` and `message_nodes` tables |
+| Paseo | `$PASEO_HOME/projects/{projects,workspaces}.json`, `$PASEO_HOME/agents/*/*.json`, and provider labels from `$PASEO_HOME/config.json`, default `~/.paseo` |
 
 - No transcript, registry, configuration, or provider state is changed. Only metadata, numeric
   statistics, tool names and coverage notices are sent to the client. Message text, tool arguments,
   tool results, and provider credentials never leave the parser. Session titles are metadata.
+- SQLite stores are opened read-only and closed after each read. Account and credential tables are
+  never queried, and JSON fields are reduced to numbers, tool names, and text lengths inside
+  SQLite. A store is reread when its database or WAL file changes. Sessions without messages are
+  skipped unless a Paseo agent owns them. Reading stores needs the daemon Node's built-in
+  `node:sqlite`; otherwise the scan shows a warning.
+- Store sessions join Paseo agents by session ID. A custom provider ID, such as a configured `kilo`
+  ACP provider, comes from the matching agent records; unlinked sessions in the same store use the
+  ID most linked sessions use, or the store's name.
+- OpenCode/Kilo: one model response per assistant message with usage. Turn time runs from each
+  user message to its last completed reply. Tool errors use the tool's `error` status, and
+  compaction parts count as compactions. Child sessions are subagents of their parent session;
+  archived state follows the store's archive time.
+- Devin CLI: compaction copies message nodes, so messages and tool calls count once per ID. Effort
+  comes from the generation model suffix (`gpt-6-astra-medium` is `gpt-6-astra` at `medium`).
+  Cache keepalive pings are not user messages. Tool errors use the recorded tool result status.
+  Turn time, reasoning, and compactions are unknown.
+- Agents of providers without readable local usage records, such as Cursor, are listed as missing
+  with a notice.
 - A provider session referenced by several Paseo agents is counted once; an active agent record
   wins over an archived one. Duplicate active/archive Codex files use the largest copy, then the
   newest on a tie. Claude subagent files are separate rows linked to their parent's workspace.
@@ -125,7 +153,8 @@ the SDK's `result.total_cost_usd` events. No pricing or provider account API is 
   is empty; inaccessible or malformed metadata produces a visible scan warning.
 - Claude usage snapshots are merged per assistant message ID, using the highest reported value
   per token category to handle repeated content blocks/final updates. Tool calls use call IDs.
-- Effort comes from Claude assistant records and Codex turn contexts or applied thread settings.
+- Effort comes from Claude assistant records, Codex turn contexts or applied thread settings, and
+  Devin CLI model names. OpenCode and Kilo record none.
   Changes split activity buckets without changing token totals. Missing effort stays unknown.
 - Modern Codex `token_usage_record` entries are deduplicated by response ID and are authoritative
   once present. Their lifetime counters differ from legacy `token_count` counters after compaction;
@@ -147,7 +176,8 @@ the SDK's `result.total_cost_usd` events. No pricing or provider account API is 
 
 ## Limitations
 
-- Reads local Claude and Codex transcripts only; other providers are not measured.
+- Measures Claude, Codex, OpenCode, Kilo, and Devin CLI from local records. Other providers, such
+  as Cursor, appear only through Paseo's agent records, with unknown usage.
 - Cost figures are a standard short-context API equivalent from a fixed price table, not a bill
   or subscription meter. No pricing or provider account API is contacted at runtime.
 - Message text, tool arguments, tool results, and credentials never leave the daemon parser.
@@ -159,7 +189,7 @@ the SDK's `result.total_cost_usd` events. No pricing or provider account API is 
 paseo plugin add panrafal/paseo-plugins:session-usage
 ```
 
-From a checkout on the daemon host (Node 22.7+ for the test runner):
+From a checkout on the daemon host (Node 22.13+ for the test runner and `node:sqlite`):
 
 ```bash
 npm install
@@ -182,7 +212,8 @@ and the server index are removed on plugin cleanup. The UI uses React Native pri
 theme colors. Filters use anchored popovers on desktop and Paseo sheets on compact clients; the
 statistics table remains horizontally scrollable.
 
-Regression tests cover provider accounting, duplicate events, compaction counters, child metadata,
+Regression tests cover provider accounting, SQLite store accounting, custom provider IDs and labels,
+duplicate events, compaction counters, child metadata,
 malformed/oversized records, active/archive copies, missing files, metadata joins, changed-file
 refresh, credential/content exclusion, date/model filters, weighted aggregation, chart totals,
 effort changes and missing levels, calendar date selection and normalization, leap-year/month

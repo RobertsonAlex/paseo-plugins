@@ -62,8 +62,9 @@ schedules.
 
 ### Session usage
 
-[`session-usage`](./session-usage) — Claude and Codex token, cache, cost, and activity stats from
-local transcripts, including archived sessions and subagents. Sortable table, provider charts,
+[`session-usage`](./session-usage) — token, cache, cost, and activity stats for Claude, Codex,
+OpenCode, Kilo, and Devin CLI from local transcripts and session stores, including archived
+sessions and subagents. Sortable table, provider charts,
 calendar, and CSV export.
 
 ![Session usage](./session-usage/images/session-usage.png)

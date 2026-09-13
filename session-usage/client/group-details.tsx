@@ -22,7 +22,7 @@ export function GroupDetails({ group, theme, onSelect }: { group: TableGroup; th
     <Text accessibilityRole="header" style={{ ...text, fontSize: 16, fontWeight: "600" }}>Sessions in this group</Text>
     {group.rows.slice(0, limit).map((row) => <Pressable key={row.session.id} accessibilityRole="button" accessibilityLabel={`Open session: ${row.session.title}`} onPress={() => onSelect(row.session.id)} style={{ minHeight: 44, justifyContent: "center", gap: 4 }}>
       <Text style={{ ...text, color: theme.colors.accent }}>{row.session.title}</Text>
-      <Text style={muted}>{row.session.provider} · {row.session.project} · {row.session.coverage}</Text>
+      <Text style={muted}>{row.session.providerLabel} · {row.session.project} · {row.session.coverage}</Text>
     </Pressable>)}
     {group.rows.length > limit ? <Pressable accessibilityRole="button" onPress={() => setLimit(limit + 40)} style={{ minHeight: 40, justifyContent: "center" }}><Text style={{ ...text, color: theme.colors.accent }}>Show more sessions</Text></Pressable> : null}
   </View>;
