@@ -14,9 +14,11 @@ line in the transcript, both live and when you reopen the thread later.
   agent. Once that time arrives, the pill becomes **Continue**.
 - **Handover** opens a modal with an editable continuation prompt (commands for recovering the
   source chat through the `paseo` CLI) and a choice of the other ready providers and their
-  models, preferring Claude, Codex, Cursor, OpenCode, Copilot, and Gemini. The mode and effort
-  are matched to the source agent. **Send** starts a new agent with that prompt **in the same
-  workspace**.
+  models, preferring Claude, Codex, Cursor, OpenCode, Copilot, and Gemini. The mode is matched by
+  permission level (Codex Auto-review → Claude Auto mode, Full Access ↔ Bypass, plan stays plan),
+  falling back to the target provider's default; the effort is matched by level. **Send** starts
+  a new agent with that prompt **in the same workspace**. It carries the source agent's labels plus
+  `chat-resume.source-agent` set to the source agent ID.
 
 `paseo.agents.create({ cwd })` always opens a new workspace; handover therefore uses
 `workspaces.ref(id).agents.create` so the new agent stays in the thread you are looking at.

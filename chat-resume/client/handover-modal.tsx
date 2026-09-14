@@ -37,6 +37,7 @@ export function HandoverModal(props: PluginButtonContentProps) {
   const colors = theme.colors;
   const [open, setOpen] = useState(true);
   const [source, setSource] = useState<PaseoAgent | null>(null);
+  const [sourceModes, setSourceModes] = useState<Mode[]>([]);
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [providerId, setProviderId] = useState<string | null>(null);
   const [catalogs, setCatalogs] = useState<Record<string, ProviderCatalog>>({});
@@ -54,9 +55,16 @@ export function HandoverModal(props: PluginButtonContentProps) {
         const agent = (await paseo.agents.ref(agentId).refresh())?.agent;
         if (!agent) throw new Error(`Agent not found: ${agentId}`);
         const snapshot = await paseo.providers.waitForReady({ cwd: agent.cwd, timeoutMs: 15_000 });
+        const listedModes = snapshot.entries.find((entry) => entry.provider === agent.provider)?.modes;
+        const modes = listedModes?.length
+          ? listedModes
+          : agent.availableModes.length
+            ? agent.availableModes
+            : ((await paseo.providers.listModes(agent.provider, { cwd: agent.cwd }).catch(() => null))?.modes ?? []);
         if (cancelled) return;
         const ready = readyHandoverProviders(snapshot.entries, agent.provider);
         setSource(agent);
+        setSourceModes(modes);
         setPrompt(buildHandoverPrompt(agent.id));
         setProviders(ready);
         setProviderId(ready[0]?.provider ?? null);
@@ -118,9 +126,9 @@ export function HandoverModal(props: PluginButtonContentProps) {
   const modeId = useMemo(
     () =>
       source && catalog && provider
-        ? similarMode(source.currentModeId, catalog.modes, provider.defaultModeId)
+        ? similarMode(source.currentModeId, sourceModes, catalog.modes, provider.defaultModeId)
         : undefined,
-    [catalog, provider, source],
+    [catalog, provider, source, sourceModes],
   );
   const thinkingOptionId = useMemo(
     () =>
@@ -155,7 +163,7 @@ export function HandoverModal(props: PluginButtonContentProps) {
         },
         prompt: text,
         title: `Handover: ${source.title ?? source.id.slice(0, 7)}`,
-        labels: { [HANDOVER_SOURCE_LABEL]: source.id },
+        labels: { ...source.labels, [HANDOVER_SOURCE_LABEL]: source.id },
       });
       toast.show(`Handover started on ${provider.label ?? provider.provider}`, { variant: "success" });
       dismiss();
