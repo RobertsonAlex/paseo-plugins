@@ -5,7 +5,13 @@ exhaustion — including Claude's "You've hit your monthly spend limit" assistan
 which leaves the agent idle instead of in `error`.
 
 Pills are offered when that state is the latest provider error **or** the last assistant
-line in the transcript, both live and when you reopen the thread later.
+line in the transcript, both live and when you reopen the thread later. Codex's quota error is
+read from the turn's `task_complete` record, which carries the renewal time.
+
+Some providers stop on quota without any message. An idle agent whose latest turn produced
+no output at all after the user message — no text, tool call, or reasoning, and not
+interrupted — is treated as quota-exhausted with no known renewal time, so it gets
+**Continue** and **Handover**.
 
 - **Continue** sends a follow-up on the same agent. Shown when the parsed renewal time has
   already passed, or when the message has no parseable renewal time.
@@ -32,7 +38,9 @@ for the exhaustion state and reset time, including times such as `resets 12am (E
 
 - Pills appear when the latest idle or error state is a usage-limit / quota-exhaustion
   message, not for context-window overflows or other failures.
-- ACP providers that keep no on-disk transcript are detected only through `lastError`.
+- ACP providers that keep no on-disk transcript are detected only through `lastError` and, for
+  silent turns, the live turn-end event — a silent turn before a daemon restart is not detected.
+- A turn that ends silently for another reason also gets the pills.
 - The handover prompt is edited in a plugin modal, not the native composer, and the app stays
   on the source agent after **Send**.
 
