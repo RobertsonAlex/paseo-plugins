@@ -34,10 +34,19 @@ Out of scope: letting the user pick the mode in the modal; changing effort match
 - [x] 3. README: mode matched by permission level; labels copied plus `chat-resume.source-agent` —
   verify: read `chat-resume/README.md`
 
+- [x] 4. Follow-up: Kilo `Payment Required ... usage_limit_exceeded` (agent 4c1b966a) showed no pills;
+  accept `_`/`-` separators and payment/credit notices in `chat-resume/shared/usage.ts`; strip ordinal
+  suffixes so Codex's "try again at Sep 19th, 2026 10:11 AM" parses — verify: `npm test --workspace=chat-resume`
+- [x] 5. `.gitignore`: `node_modules` instead of `node_modules/` so worktree symlinks stay untracked.
+
 ## Verification
 - `npm run typecheck` (all workspaces) and `npm test --workspace=chat-resume`.
 - Install the worktree as `chat-resume-dev`, check `paseo plugin ls` / `paseo plugin logs`, remove it.
 - Live Send needs an agent in a quota-exhausted state; if none exists, report that as pending.
+
+Done 2026-09-14: tests 19/19 (also TZ=America/Los_Angeles, Asia/Tokyo), all workspaces typecheck.
+Live via `chat-resume-dev`: Kilo agent 4c1b966a showed Continue + Handover; its handover b1edfa4d
+started on Claude in `auto` with `devflows.*` labels and `chat-resume.source-agent`. Dev install removed.
 
 ## Open questions
 - Rename the label key to `chat-resume.handed-over-from`? Would need `pills.tsx` to read both keys. Non-blocking.
