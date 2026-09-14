@@ -1,6 +1,8 @@
 const EXHAUSTED_PATTERNS = [
-  /(?:usage|rate|request|token) limit (?:has been )?(?:reached|exceeded|exhausted|hit)/i,
-  /(?:reached|exceeded|exhausted|hit) (?:your |the )?(?:usage|rate|request|token) limit/i,
+  /(?:usage|rate|request|token)[ _-]limit[ _-](?:has[ _-]been[ _-])?(?:reached|exceeded|exhausted|hit)/i,
+  /(?:reached|exceeded|exhausted|hit)[ _-](?:(?:your|the)[ _-])?(?:usage|rate|request|token)[ _-]limit/i,
+  /payment required/i,
+  /(?:add|buy|purchase)(?: more)? credits/i,
   /(?:insufficient|exhausted) (?:quota|credits?)/i,
   /quota (?:has been )?(?:reached|exceeded|exhausted)/i,
   /quota limits?/i,
@@ -207,7 +209,8 @@ function absoluteResetAt(error: string, observedAt: Date): Date | null {
     error,
   );
   if (dated) {
-    const parsedMs = Date.parse(dated[1].trim());
+    // "Sep 19th, 2026 10:11 AM": Date.parse rejects ordinal suffixes.
+    const parsedMs = Date.parse(dated[1].trim().replace(/(\d)(?:st|nd|rd|th)\b/gi, "$1"));
     if (!Number.isNaN(parsedMs)) return new Date(parsedMs);
   }
 

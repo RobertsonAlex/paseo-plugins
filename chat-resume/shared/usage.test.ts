@@ -18,6 +18,23 @@ test("detects Claude's monthly spend-limit assistant message", () => {
   assert.equal(isUsageExhaustedError("Input length exceeds the context window limit"), false);
 });
 
+const KILO_CREDITS =
+  'Internal error: Payment Required: {"error":{"title":"Low Credit Warning!","message":"Add credits to continue, or switch to a free model","balance":-0.002749,"buyCreditsUrl":"https://app.kilo.ai/profile"},"error_type":"usage_limit_exceeded"}';
+
+const CODEX_USAGE =
+  "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 19th, 2026 10:11 AM.";
+
+test("detects Kilo's out-of-credits payment error without a renewal time", () => {
+  assert.equal(isUsageExhaustedError(KILO_CREDITS), true);
+  assert.equal(isUsageExhaustedError("error_type: rate_limit_exceeded"), true);
+  assert.equal(usageResetAt(KILO_CREDITS, "2026-09-14T09:38:53.116Z"), null);
+});
+
+test("parses Codex's ordinal renewal date in daemon-local time", () => {
+  const resetAt = usageResetAt(CODEX_USAGE, "2026-09-14T09:00:00.000Z");
+  assert.equal(resetAt?.toISOString(), new Date(2026, 8, 19, 10, 11).toISOString());
+});
+
 test("parses Claude's 12am Europe/Warsaw reset from the message timestamp", () => {
   const observed = new Date("2026-09-10T20:18:39.177Z");
   const resetAt = usageResetAt(CLAUDE_MONTHLY, observed);
