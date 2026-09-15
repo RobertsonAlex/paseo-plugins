@@ -1,10 +1,4 @@
-import {
-  pickForEffort,
-  type CreateAgentArguments,
-  type EffortId,
-  type PickPaseo,
-  type PickResult,
-} from "./model-pick";
+import type { EffortId } from "./pick";
 
 export type RouteMode = "relay" | "handoff" | "detach";
 
@@ -27,7 +21,14 @@ export interface RouterHandle {
   archive(): Promise<{ archivedAt: string }>;
 }
 
-export interface RoutingPaseo extends PickPaseo {
+export interface CreateAgentCall {
+  provider: string;
+  modeId?: string;
+  thinkingOptionId?: string;
+  featureValues?: Record<string, unknown>;
+}
+
+export interface RoutingPaseo {
   agents: {
     ref(id: string): RouterHandle;
   };
@@ -79,12 +80,8 @@ export function delegateTitle(profileName: string, text: string): string {
   return composed.length <= 60 ? composed : `${composed.slice(0, 59)}…`;
 }
 
-export function routingNote(
-  profileName: string,
-  call: CreateAgentArguments,
-  delegateId: string,
-): string {
-  return `Routing to ${profileName} (${call.provider}/${call.model}) as ${delegateId}.`;
+export function routingNote(modelId: string, provider: string, delegateId: string): string {
+  return `Routing to ${modelId} (${provider}) as ${delegateId}.`;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -123,46 +120,48 @@ async function workspaceIdOf(paseo: RoutingPaseo, routerAgentId: string): Promis
   return handle.workspaceId ?? refreshed?.agent.workspaceId ?? null;
 }
 
-function providerModel(call: CreateAgentArguments): string {
-  return `${call.provider}/${call.model}`;
-}
-
 export async function* routeMessage(options: {
   paseo: RoutingPaseo;
   routerAgentId: string;
+  modelId: string;
   mode: RouteMode;
   effort: EffortId;
   text: string;
   timeouts: { relayTimeoutMs: number; archiveDelayMs: number };
+  pick: (modelId: string, effort: EffortId) => Promise<CreateAgentCall>;
   signal?: AbortSignal;
-  pickForEffort?: typeof pickForEffort;
   delay?: (ms: number) => Promise<void>;
 }): AsyncGenerator<RouteEvent, void> {
-  const pick = options.pickForEffort ?? pickForEffort;
   throwIfAborted(options.signal);
   const workspaceId = await workspaceIdOf(options.paseo, options.routerAgentId);
   throwIfAborted(options.signal);
   if (!workspaceId) throw new RouteFailure("Router agent has no workspace");
 
-  const chosen: PickResult = await pick(options.paseo, options.effort);
+  let call: CreateAgentCall;
+  try {
+    call = await options.pick(options.modelId, options.effort);
+  } catch (error) {
+    throw error instanceof RouteFailure
+      ? error
+      : new RouteFailure(error instanceof Error ? error.message : String(error));
+  }
   throwIfAborted(options.signal);
-  if ("none" in chosen) throw new RouteFailure(chosen.none);
 
   const delegate = await options.paseo.workspaces.ref(workspaceId).agents.create({
     config: {
-      provider: providerModel(chosen.call),
-      modeId: chosen.call.modeId,
-      thinkingOptionId: chosen.call.thinkingOptionId,
-      featureValues: chosen.call.featureValues,
+      provider: call.provider,
+      modeId: call.modeId,
+      thinkingOptionId: call.thinkingOptionId,
+      featureValues: call.featureValues,
     },
     prompt: options.text,
-    title: delegateTitle(chosen.profile.name, options.text),
+    title: delegateTitle(options.modelId, options.text),
     labels: {
       [ROUTER_LABEL]: options.routerAgentId,
-      [PROFILE_LABEL]: chosen.profile.name,
+      [PROFILE_LABEL]: options.modelId,
     },
   });
-  const note = routingNote(chosen.profile.name, chosen.call, delegate.id);
+  const note = routingNote(options.modelId, call.provider, delegate.id);
   yield { type: "note", text: note };
 
   if (options.mode === "handoff") {

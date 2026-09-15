@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { CreateAgentArguments } from "./model-pick";
 import {
   PROFILE_LABEL,
   ROUTER_LABEL,
@@ -8,25 +7,22 @@ import {
   RouteFailure,
   delegateTitle,
   routeMessage,
+  type CreateAgentCall,
   type DelegateHandle,
   type FinishResult,
   type RoutingPaseo,
 } from "./route";
 
-const call: CreateAgentArguments = {
-  provider: "claude",
-  model: "claude-haiku-4-5",
+const call: CreateAgentCall = {
+  provider: "claude/claude-haiku-4-5",
   thinkingOptionId: "min",
 };
 
-const pickOk = async () => ({
-  profile: { name: "Agent Low · Claude" },
-  call,
-});
+const pickOk = async () => call;
 
-const pickNone = async () => ({
-  none: "Agent Low: no profile has allowance left; Agent Low · Claude resets in 6d",
-});
+const pickNone = async () => {
+  throw new Error("Agent Low: no profile has allowance left; Agent Low · Claude resets in 6d");
+};
 
 interface FakeOptions {
   workspaceId?: string | null;
@@ -38,18 +34,9 @@ interface FakeOptions {
 function fakePaseo(options: FakeOptions = {}): RoutingPaseo {
   const workspaceId = options.workspaceId === undefined ? "ws-1" : options.workspaceId;
   const archives = options.archives ?? [];
-  let wait = options.wait ?? (async () => ({ status: "idle" as const, lastMessage: "pong", error: null }));
+  const wait =
+    options.wait ?? (async () => ({ status: "idle" as const, lastMessage: "pong", error: null }));
   return {
-    config: {
-      async get() {
-        return { config: { agentProfiles: [] } };
-      },
-    },
-    providers: {
-      async listUsage() {
-        return { providers: [] };
-      },
-    },
     agents: {
       ref(id) {
         return {
@@ -92,11 +79,12 @@ async function collect(
   const gen = routeMessage({
     paseo,
     routerAgentId: "router-1",
+    modelId: "agent",
     mode: "relay",
     effort: "min",
     text: "Reply with the single word pong.",
     timeouts: { relayTimeoutMs: 120_000, archiveDelayMs: 3_000 },
-    pickForEffort: pickOk,
+    pick: pickOk,
     ...extra,
   });
   for await (const event of gen) events.push(event);
@@ -104,8 +92,8 @@ async function collect(
 }
 
 test("delegateTitle keeps the first line within 60 characters", () => {
-  assert.equal(delegateTitle("Agent Low · Claude", "pong"), "Agent Low · Claude: pong");
-  const long = delegateTitle("Agent Low · Claude", "x".repeat(80));
+  assert.equal(delegateTitle("agent", "pong"), "agent: pong");
+  const long = delegateTitle("agent", "x".repeat(80));
   assert.equal(long.length, 60);
   assert.equal(long.endsWith("…"), true);
 });
@@ -116,7 +104,7 @@ test("relay idle yields the routing note then the delegate's last message", asyn
   assert.deepEqual(events, [
     {
       type: "note",
-      text: "Routing to Agent Low · Claude (claude/claude-haiku-4-5) as delegate-1.",
+      text: "Routing to agent (claude/claude-haiku-4-5) as delegate-1.",
     },
     { type: "final", text: "pong" },
   ]);
@@ -129,10 +117,10 @@ test("relay idle yields the routing note then the delegate's last message", asyn
         featureValues: undefined,
       },
       prompt: "Reply with the single word pong.",
-      title: "Agent Low · Claude: Reply with the single word pong.",
+      title: "agent: Reply with the single word pong.",
       labels: {
         [ROUTER_LABEL]: "router-1",
-        [PROFILE_LABEL]: "Agent Low · Claude",
+        [PROFILE_LABEL]: "agent",
       },
     },
   ]);
@@ -189,11 +177,12 @@ test("relay interrupt cancels without archiving", async () => {
   const gen = routeMessage({
     paseo: fakePaseo({ archives, wait }),
     routerAgentId: "router-1",
+    modelId: "agent",
     mode: "relay",
     effort: "min",
     text: "pong",
     timeouts: { relayTimeoutMs: 120_000, archiveDelayMs: 3_000 },
-    pickForEffort: pickOk,
+    pick: pickOk,
     signal: signal.signal,
   });
   const first = await gen.next();
@@ -207,7 +196,7 @@ test("relay interrupt cancels without archiving", async () => {
 test("handoff archives the router after the delay", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const archives: string[] = [];
-  const note = "Routing to Agent Low · Claude (claude/claude-haiku-4-5) as delegate-1.";
+  const note = "Routing to agent (claude/claude-haiku-4-5) as delegate-1.";
   const events = await collect(fakePaseo({ archives }), { mode: "handoff" });
   assert.deepEqual(events, [
     { type: "note", text: note },
@@ -222,7 +211,7 @@ test("handoff archives the router after the delay", async (t) => {
 test("detach completes without waiting or archiving", async () => {
   const archives: string[] = [];
   let waited = false;
-  const note = "Routing to Agent Low · Claude (claude/claude-haiku-4-5) as delegate-1.";
+  const note = "Routing to agent (claude/claude-haiku-4-5) as delegate-1.";
   const events = await collect(
     fakePaseo({
       archives,
@@ -252,9 +241,9 @@ test("missing workspace fails the turn", async () => {
   );
 });
 
-test("no allowance fails with the model-pick none message", async () => {
+test("a failed pick fails the turn with that message", async () => {
   await assert.rejects(
-    () => collect(fakePaseo(), { pickForEffort: pickNone }),
+    () => collect(fakePaseo(), { pick: pickNone }),
     (error: unknown) => {
       assert.ok(error instanceof RouteFailure);
       assert.equal(

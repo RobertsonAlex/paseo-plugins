@@ -137,13 +137,13 @@ handover draft is an agent panel; the new agent does not start until **Start age
 
 ### Profile routing
 
-[`profile-routing`](./profile-routing) — a provider, `profile-routing/auto`, whose agent is a
-router. Each message picks the best configured profile for the selected thinking tier (via
-model-pick and live usage), starts that agent in the same workspace, and either relays its
-answer or lets it run after the router finishes (`handoff` / `detach`).
+[`profile-routing`](./profile-routing) — a provider whose agent is a router. Each message runs a
+model script from plugin settings (with `EFFORT` from the thinking option), starts that agent in
+the same workspace, and either relays its answer or lets it run after the router finishes
+(`handoff` / `detach`).
 
-No settings screen. Configure the model-pick module path and timeouts through daemon
-environment variables. `handoff` and `detach` need `archiveOnFinish: false` on schedules so the
+Configure models, relay timeout, and handoff archive delay under **Settings → Plugins →
+profile-routing**. `handoff` and `detach` need `archiveOnFinish: false` on schedules so the
 delegate is not archived with the run workspace.
 
 ## Development

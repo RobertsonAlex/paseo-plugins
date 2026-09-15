@@ -1,15 +1,15 @@
 # profile-routing
 
-A server-only Paseo provider. An agent on `profile-routing/auto` is a router: each message runs
-capitally-dev's model-pick against the daemon's profiles and live usage, creates a delegate from
-the best profile of the selected tier **in the same workspace**, and then either waits for that
-delegate or lets it run on its own.
+A Paseo provider whose agent is a router. Each message runs a **model script** from plugin
+settings with `EFFORT` in the environment, creates a delegate from the JSON that script prints
+**in the same workspace**, and then either waits for that delegate or lets it run on its own.
 
 Schedules pin a provider at creation time. Pointing a schedule at this provider defers the real
 provider choice until the run fires.
 
-No settings screen and no client UI. The router's timeline uses built-in `user_message`,
-`notification`, and `assistant_message` items.
+The router's timeline uses built-in `user_message`, `notification`, and `assistant_message` items.
+Configure models and timeouts under **Settings → Plugins → profile-routing**, or **Configure
+profile routing** in the Command Center.
 
 ## Modes
 
@@ -19,12 +19,40 @@ No settings screen and no client UI. The router's timeline uses built-in `user_m
 | **Handoff** | Start the delegate, complete this turn immediately, then archive the router a few seconds later. |
 | **Detach** | Start the delegate and complete this turn immediately. The router stays. |
 
-Thinking options `min`, `medium` (default), `high`, and `max` map to model-pick tiers
-`agent low`, `agent medium`, `agent high`, and `agent max`. There is no `agent min` tier.
+Thinking options `min`, `medium` (default), `high`, and `max` are passed to the model script as
+`EFFORT`. `min` becomes `low` so a command such as `--tier "agent $EFFORT"` matches `agent low`.
 
-An info notification always names the chosen profile, provider, model, and delegate id. The
-assistant message is the run's final text: the delegate's answer in relay, or that same routing
-note in handoff and detach so the run output still says where the work went.
+An info notification names the chosen settings model, provider, and delegate id. The assistant
+message is the run's final text: the delegate's answer in relay, or that same routing note in
+handoff and detach so the run output still says where the work went.
+
+## Models
+
+Each settings model has an id (the catalog model, for example `profile-routing/agent`) and a
+shell command. The command runs with `/bin/sh -c` and `EFFORT` in its environment. It must print
+JSON matching the agent-create config:
+
+```json
+{
+  "provider": "claude/sonnet-5",
+  "modeId": "auto",
+  "thinkingOptionId": "low",
+  "featureValues": {}
+}
+```
+
+`provider` is `provider/model`. Extra fields are ignored. A non-zero exit or empty stdout fails
+the router turn.
+
+Shipped defaults:
+
+```text
+agent: ~/.agents/skills/model-pick/scripts/pick --tier "agent $EFFORT"
+claude: echo '{"provider":"claude/sonnet-5", "effort":"$EFFORT"}'
+```
+
+The first model in the list is the catalog default. The `claude` line is a minimal example; the
+`agent` line expects a `pick` helper that prints the JSON above.
 
 ## Schedules
 
@@ -38,15 +66,16 @@ the app or with `paseo schedule update` after create.
 A router used as `target: agent` (an existing agent) must use **detach**, never **handoff**.
 Archiving the router makes the next run fail with a gone target.
 
-## Environment
+## Settings storage
 
-The plugin subprocess inherits the daemon environment (`~/.paseo/agent.env`):
+Timeouts and models are stored under
+`$PASEO_HOME/plugin-data/profile-routing/settings.json`.
 
-| Variable | Default | Meaning |
+| Field | Default | Meaning |
 | --- | --- | --- |
-| `PROFILE_ROUTING_MODEL_PICK` | `~/.agents/skills/model-pick/scripts/api.ts` | Module that exports `pickProfiles` |
-| `PROFILE_ROUTING_RELAY_TIMEOUT_MINUTES` | `120` | How long relay waits for the delegate |
-| `PROFILE_ROUTING_ARCHIVE_DELAY_SECONDS` | `3` | Delay before handoff archives the router |
+| `relayTimeoutMinutes` | `120` | How long relay waits for the delegate |
+| `archiveDelaySeconds` | `3` | Delay before handoff archives the router |
+| `models` | `agent`, `claude` as above | Catalog models and their scripts |
 
 ## Install
 
@@ -60,6 +89,6 @@ From a checkout on the daemon machine:
 paseo plugin install /absolute/path/to/paseo-plugins/profile-routing
 ```
 
-Then `paseo plugin ls` should show `running`, and `paseo models` should list `profile-routing/auto`.
-After source edits: `npm run typecheck --workspace=profile-routing` and
-`paseo plugin reload profile-routing`.
+Then `paseo plugin ls` should show `running`, and `paseo provider models profile-routing` should
+list the configured model ids. After source edits: `npm run typecheck --workspace=profile-routing`
+and `paseo plugin reload profile-routing`.

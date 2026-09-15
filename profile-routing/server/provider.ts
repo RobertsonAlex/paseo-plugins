@@ -1,6 +1,7 @@
 import {
   negotiateProviderCapabilities,
   requireProviderCapabilities,
+  type ProviderCatalog,
   type ProviderConfigState,
   type ProviderConnection,
   type ProviderEvent,
@@ -11,8 +12,11 @@ import {
   type ProviderSessionConfig,
 } from "@getpaseo/plugin/server/provider";
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
-import type { EffortId } from "./model-pick";
+import {
+  DEFAULT_PROFILE_ROUTING_SETTINGS,
+  type ProfileRoutingSettings,
+} from "../shared/settings";
+import { EFFORT_IDS, pickFromScript, type EffortId } from "./pick";
 import { RouteCanceled, RouteFailure, routeMessage, type RouteMode, type RoutingPaseo } from "./route";
 
 const CAPABILITIES = [
@@ -24,65 +28,53 @@ const CAPABILITIES = [
 ] as const;
 
 const MODE_IDS = ["relay", "handoff", "detach"] as const;
-const EFFORT_IDS = ["min", "medium", "high", "max"] as const;
-
 const MODE_SET = new Set<string>(MODE_IDS);
 const EFFORT_SET = new Set<string>(EFFORT_IDS);
 
-const CATALOG = {
-  models: [{ id: "auto", label: "Best available profile" }],
-  modes: [
-    {
-      id: "relay",
-      label: "Relay",
-      description: "Wait for the delegate and relay its answer as this turn",
-    },
-    {
-      id: "handoff",
-      label: "Handoff",
-      description: "Start the delegate, end this turn, then archive this router",
-    },
-    {
-      id: "detach",
-      label: "Detach",
-      description: "Start the delegate and end this turn without waiting",
-    },
-  ],
-  thinkingOptions: [
-    { id: "min", label: "Min" },
-    { id: "medium", label: "Medium" },
-    { id: "high", label: "High" },
-    { id: "max", label: "Max" },
-  ],
-  defaultModel: "auto",
-  defaultMode: "relay",
-  defaultThinkingOption: "medium",
-};
+const MODES = [
+  {
+    id: "relay",
+    label: "Relay",
+    description: "Wait for the delegate and relay its answer as this turn",
+  },
+  {
+    id: "handoff",
+    label: "Handoff",
+    description: "Start the delegate, end this turn, then archive this router",
+  },
+  {
+    id: "detach",
+    label: "Detach",
+    description: "Start the delegate and end this turn without waiting",
+  },
+];
 
-const TimeoutEnvSchema = z.object({
-  PROFILE_ROUTING_RELAY_TIMEOUT_MINUTES: z
-    .string()
-    .optional()
-    .transform((value) => (value === undefined || value === "" ? 120 : Number(value)))
-    .pipe(z.number().positive()),
-  PROFILE_ROUTING_ARCHIVE_DELAY_SECONDS: z
-    .string()
-    .optional()
-    .transform((value) => (value === undefined || value === "" ? 3 : Number(value)))
-    .pipe(z.number().nonnegative()),
-});
+const THINKING = [
+  { id: "min", label: "Min" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Max" },
+];
 
-export function readTimeouts(env: NodeJS.ProcessEnv = process.env): {
+function catalogFrom(settings: ProfileRoutingSettings): ProviderCatalog {
+  const models = settings.models.map((model) => ({ id: model.id, label: model.id }));
+  return {
+    models,
+    modes: MODES,
+    thinkingOptions: THINKING,
+    defaultModel: models[0]?.id,
+    defaultMode: "relay",
+    defaultThinkingOption: "medium",
+  };
+}
+
+function timeoutsFrom(settings: ProfileRoutingSettings): {
   relayTimeoutMs: number;
   archiveDelayMs: number;
 } {
-  const parsed = TimeoutEnvSchema.parse({
-    PROFILE_ROUTING_RELAY_TIMEOUT_MINUTES: env.PROFILE_ROUTING_RELAY_TIMEOUT_MINUTES,
-    PROFILE_ROUTING_ARCHIVE_DELAY_SECONDS: env.PROFILE_ROUTING_ARCHIVE_DELAY_SECONDS,
-  });
   return {
-    relayTimeoutMs: parsed.PROFILE_ROUTING_RELAY_TIMEOUT_MINUTES * 60_000,
-    archiveDelayMs: parsed.PROFILE_ROUTING_ARCHIVE_DELAY_SECONDS * 1_000,
+    relayTimeoutMs: settings.relayTimeoutMinutes * 60_000,
+    archiveDelayMs: settings.archiveDelaySeconds * 1_000,
   };
 }
 
@@ -102,6 +94,11 @@ function asEffort(value: string | undefined): EffortId {
   return isEffort(value) ? value : "medium";
 }
 
+function asModel(value: string | undefined, settings: ProfileRoutingSettings): string {
+  if (value && settings.models.some((model) => model.id === value)) return value;
+  return settings.models[0]?.id ?? "";
+}
+
 function promptText(content: ProviderContent[]): string {
   return content
     .filter((part): part is { type: "text"; text: string } => {
@@ -118,19 +115,24 @@ interface RouterSession {
   activeTurn: { turnId: string; abort: AbortController } | null;
 }
 
-export function createProfileRoutingProvider(
-  getPaseo: () => RoutingPaseo | undefined,
-): ProviderRegistration {
+export function createProfileRoutingProvider(options: {
+  getPaseo: () => RoutingPaseo | undefined;
+  readSettings: () => Promise<ProfileRoutingSettings>;
+}): ProviderRegistration {
   return {
     id: "profile-routing",
     label: "Profile routing",
-    description: "Routes each prompt to the best available agent profile for the selected tier",
+    description: "Routes each prompt through a configured model script, then relays or detaches",
     icon: "icon.svg",
+    async getCatalogCacheKey() {
+      const settings = await options.readSettings();
+      return settings.models.map((model) => model.id).join(",");
+    },
     async connect(request) {
       if (!request.versions.includes(1)) throw new Error("Provider protocol version 1 is required");
       return createConnection(
         negotiateProviderCapabilities(request.capabilities, CAPABILITIES),
-        getPaseo,
+        options,
       );
     },
   };
@@ -138,14 +140,22 @@ export function createProfileRoutingProvider(
 
 function createConnection(
   capabilities: readonly string[],
-  getPaseo: () => RoutingPaseo | undefined,
+  options: {
+    getPaseo: () => RoutingPaseo | undefined;
+    readSettings: () => Promise<ProfileRoutingSettings>;
+  },
 ): ProviderConnection {
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, RouterSession>();
+  let settings = DEFAULT_PROFILE_ROUTING_SETTINGS;
   let closed = false;
   const emit = (event: ProviderEvent) => {
     if (closed) return;
     for (const listener of listeners) listener(event);
+  };
+  const refreshSettings = async () => {
+    settings = await options.readSettings();
+    return settings;
   };
 
   return {
@@ -155,7 +165,7 @@ function createConnection(
       if (closed) throw new Error("Provider connection is closed");
       validateAdmission(input, sessions, capabilities);
       if (input.type === "session.prompt") {
-        admitPrompt(input, { sessions, emit, getPaseo });
+        admitPrompt(input, { sessions, emit, getPaseo: options.getPaseo, readSettings: refreshSettings });
         return;
       }
       if (input.type === "session.interrupt") {
@@ -164,7 +174,15 @@ function createConnection(
         return;
       }
       queueMicrotask(() => {
-        if (!closed) dispatch(input, { sessions, emit, capabilities });
+        if (!closed) {
+          void dispatch(input, {
+            sessions,
+            emit,
+            capabilities,
+            settings: () => settings,
+            refreshSettings,
+          });
+        }
       });
     },
     onEvent(listener) {
@@ -203,22 +221,26 @@ interface ConnectionState {
   sessions: Map<string, RouterSession>;
   emit(event: ProviderEvent): void;
   capabilities: readonly string[];
+  settings(): ProfileRoutingSettings;
+  refreshSettings(): Promise<ProfileRoutingSettings>;
 }
 
-function dispatch(input: ProviderInput, state: ConnectionState): void {
+async function dispatch(input: ProviderInput, state: ConnectionState): Promise<void> {
   switch (input.type) {
-    case "catalog":
+    case "catalog": {
+      const settings = await state.refreshSettings();
       state.emit({
         type: "catalog",
         requestId: input.requestId,
-        catalog: CATALOG,
+        catalog: catalogFrom(settings),
       });
       return;
+    }
     case "sessions":
       state.emit({ type: "sessions", requestId: input.requestId, sessions: [] });
       return;
     case "session.open":
-      openSession(input, state);
+      await openSession(input, state);
       return;
     case "session.configure":
       configureSession(input, state);
@@ -238,15 +260,16 @@ function dispatch(input: ProviderInput, state: ConnectionState): void {
   }
 }
 
-function openSession(
+async function openSession(
   input: Extract<ProviderInput, { type: "session.open" }>,
   state: ConnectionState,
-): void {
+): Promise<void> {
+  const settings = await state.refreshSettings();
   const persistence = input.persistence ?? { version: 1, data: {} };
   const session: RouterSession = {
     config: {
       ...input.config,
-      model: input.config.model ?? CATALOG.defaultModel,
+      model: asModel(input.config.model, settings),
       mode: asMode(input.config.mode),
       thinkingOption: asEffort(input.config.thinkingOption),
     },
@@ -265,13 +288,16 @@ function openSession(
     title: input.config.title,
     cwd: input.config.cwd,
   });
-  state.emit({ type: "session.config", sessionId: input.sessionId, config: configState(session) });
+  state.emit({ type: "session.config", sessionId: input.sessionId, config: configState(session, settings) });
   state.emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
 }
 
 function admitPrompt(
   input: Extract<ProviderInput, { type: "session.prompt" }>,
-  state: Pick<ConnectionState, "sessions" | "emit"> & { getPaseo: () => RoutingPaseo | undefined },
+  state: Pick<ConnectionState, "sessions" | "emit"> & {
+    getPaseo: () => RoutingPaseo | undefined;
+    readSettings: () => Promise<ProfileRoutingSettings>;
+  },
 ): void {
   const session = state.sessions.get(input.sessionId);
   if (!session) throw new Error(`Unknown session: ${input.sessionId}`);
@@ -313,7 +339,10 @@ async function runTurn(
   sessionId: string,
   turnId: string,
   text: string,
-  state: Pick<ConnectionState, "sessions" | "emit"> & { getPaseo: () => RoutingPaseo | undefined },
+  state: Pick<ConnectionState, "sessions" | "emit"> & {
+    getPaseo: () => RoutingPaseo | undefined;
+    readSettings: () => Promise<ProfileRoutingSettings>;
+  },
 ): Promise<void> {
   const session = state.sessions.get(sessionId);
   if (!session || session.activeTurn?.turnId !== turnId) return;
@@ -339,18 +368,28 @@ async function runTurn(
     return;
   }
 
+  const settings = await state.readSettings();
+  const modelId = asModel(session.config.model, settings);
+  const spec = settings.models.find((model) => model.id === modelId);
+  if (!spec) {
+    fail("No models are configured in Profile routing settings");
+    return;
+  }
+
   try {
     for await (const event of routeMessage({
       paseo,
       routerAgentId: session.routerAgentId,
+      modelId: spec.id,
       mode: asMode(session.config.mode),
       effort: asEffort(session.config.thinkingOption),
       text,
-      timeouts: readTimeouts(),
+      timeouts: timeoutsFrom(settings),
       signal: session.activeTurn.abort.signal,
+      pick: (_id, effort) =>
+        pickFromScript({ script: spec.script, effort, cwd: session.config.cwd }),
     })) {
       if (session.activeTurn?.turnId !== turnId) return;
-      // Notifications are not joined into the run's last assistant message.
       if (event.type === "note") {
         state.emit({
           type: "timeline.item",
@@ -400,31 +439,36 @@ function configureSession(
 ): void {
   const session = state.sessions.get(input.sessionId);
   if (!session) throw new Error(`Unknown session: ${input.sessionId}`);
+  const settings = state.settings();
   const changes = input.changes;
   session.config = {
     ...session.config,
-    model: changes.model === null ? CATALOG.defaultModel : (changes.model ?? session.config.model),
-    mode: changes.mode === null ? CATALOG.defaultMode : asMode(changes.mode ?? session.config.mode),
+    model:
+      changes.model === null
+        ? asModel(undefined, settings)
+        : asModel(changes.model ?? session.config.model, settings),
+    mode: changes.mode === null ? "relay" : asMode(changes.mode ?? session.config.mode),
     thinkingOption:
       changes.thinkingOption === null
-        ? CATALOG.defaultThinkingOption
+        ? "medium"
         : asEffort(changes.thinkingOption ?? session.config.thinkingOption),
     settings: changes.settings
       ? { ...session.config.settings, ...changes.settings }
       : session.config.settings,
   };
-  state.emit({ type: "session.config", sessionId: input.sessionId, config: configState(session) });
+  state.emit({ type: "session.config", sessionId: input.sessionId, config: configState(session, settings) });
   state.emit({ type: "request.completed", requestId: input.requestId });
 }
 
-function configState(session: RouterSession): ProviderConfigState {
+function configState(session: RouterSession, settings: ProfileRoutingSettings): ProviderConfigState {
+  const catalog = catalogFrom(settings);
   return {
-    model: session.config.model ?? CATALOG.defaultModel,
+    model: asModel(session.config.model, settings),
     mode: asMode(session.config.mode),
     thinkingOption: asEffort(session.config.thinkingOption),
-    models: CATALOG.models,
-    modes: CATALOG.modes,
-    thinkingOptions: CATALOG.thinkingOptions,
+    models: catalog.models,
+    modes: catalog.modes,
+    thinkingOptions: catalog.thinkingOptions ?? THINKING,
     settings: [],
   };
 }
