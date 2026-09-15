@@ -12,7 +12,8 @@
     "schedule-runs",
     "agents-history",
     "session-usage",
-    "skills-usage"
+    "skills-usage",
+    "profile-routing"
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces"

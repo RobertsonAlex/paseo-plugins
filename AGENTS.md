@@ -41,6 +41,9 @@ Current plugins:
   timeline through the SDK; the server entry scans skill directories and runs `git ls-files`.
 - `vscode-open-remote`: adds a remote-editor pill, editor settings, desktop URI handling, and tablet
   `vscode.dev` support. It intentionally hides the pill on phones.
+- `profile-routing`: a server-only provider. An agent on `profile-routing/auto` runs model-pick
+  against live usage, creates a delegate from the best profile of the selected tier in the same
+  workspace, and either relays that answer or detaches/handoffs.
 
 ## Runtime boundaries
 
