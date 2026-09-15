@@ -1,7 +1,7 @@
 # session-usage
 
 Adds **Session usage** to Paseo's sidebar and Command Center. It reads Claude Code and Codex
-transcripts and the OpenCode, Kilo, and Devin CLI session stores on the selected daemon, including
+transcripts and the OpenCode, Kilo, Devin CLI, and Cursor session stores on the selected daemon, including
 archived sessions, subagents, and sessions started outside Paseo, then joins them with Paseo's
 project, workspace, and agent records. Agents of other providers are listed from Paseo's records
 with unknown usage.
@@ -107,7 +107,7 @@ This is a **standard, short-context API equivalent**, not a bill or subscription
 It excludes priority/fast processing, long-context and regional premiums, tool fees, negotiated
 discounts, tax, and plan charges. It does not infer what you paid for Claude Pro/Max or ChatGPT.
 **Reported cost** is separate. OpenCode and Kilo record a USD cost per message; Claude transcripts
-rarely contain the SDK's `result.total_cost_usd` events, and Codex and Devin CLI record none. No pricing or provider account API is contacted at runtime.
+rarely contain the SDK's `result.total_cost_usd` events, and Codex, Devin CLI, and Cursor record none. No pricing or provider account API is contacted at runtime.
 
 ## Data sources and accounting
 
@@ -117,6 +117,7 @@ rarely contain the SDK's `result.total_cost_usd` events, and Codex and Devin CLI
 | Codex | `$CODEX_HOME/sessions/**/rollout-*.jsonl` and `$CODEX_HOME/archived_sessions/**/rollout-*.jsonl`, default `~/.codex` |
 | OpenCode, Kilo | `$XDG_DATA_HOME/opencode/opencode.db` and `$XDG_DATA_HOME/kilo/kilo.db`, default `~/.local/share`; only the `session`, `message`, and `part` tables |
 | Devin CLI | `$XDG_DATA_HOME/devin/cli/sessions.db`, default `~/.local/share`; only the `sessions` and `message_nodes` tables |
+| Cursor | `$CURSOR_CONFIG_DIR/{acp-sessions/*,chats/*/*}/store.db`; without it, both `$XDG_CONFIG_HOME/cursor` (default `~/.config/cursor`) and `~/.cursor`; only the `meta` and `blobs` tables |
 | Paseo | `$PASEO_HOME/projects/{projects,workspaces}.json`, `$PASEO_HOME/agents/*/*.json`, and provider labels from `$PASEO_HOME/config.json`, default `~/.paseo` |
 
 - No transcript, registry, configuration, or provider state is changed. Only metadata, numeric
@@ -138,8 +139,14 @@ rarely contain the SDK's `result.total_cost_usd` events, and Codex and Devin CLI
   comes from the generation model suffix (`gpt-6-astra-medium` is `gpt-6-astra` at `medium`).
   Cache keepalive pings are not user messages. Tool errors use the recorded tool result status.
   Turn time, reasoning, and compactions are unknown.
-- Agents of providers without readable local usage records, such as Cursor, are listed as missing
-  with a notice.
+- Cursor: one store per session. Only messages listed by the latest root blob count; older roots and
+  edited-away messages in the store are ignored. Cursor records no token usage or message times
+  locally, so tokens, cost, and turn time are unknown, sessions show partial coverage, and all
+  activity falls on the session's start day. Effort comes from the model name suffix
+  (`cursor-grok-4.6-high-fast` is `cursor-grok-4.6-fast` at `high`). Tool errors use the recorded
+  tool result's `error` or `failure` output. Stores without a root or messages are skipped unless a
+  Paseo agent owns them.
+- Agents of providers without readable local usage records are listed as missing with a notice.
 - A provider session referenced by several Paseo agents is counted once; an active agent record
   wins over an archived one. Duplicate active/archive Codex files use the largest copy, then the
   newest on a tie. Claude subagent files are separate rows linked to their parent's workspace.
@@ -176,8 +183,9 @@ rarely contain the SDK's `result.total_cost_usd` events, and Codex and Devin CLI
 
 ## Limitations
 
-- Measures Claude, Codex, OpenCode, Kilo, and Devin CLI from local records. Other providers, such
-  as Cursor, appear only through Paseo's agent records, with unknown usage.
+- Measures Claude, Codex, OpenCode, Kilo, and Devin CLI from local records. Cursor sessions include
+  messages, tool calls, and models but no token usage. Other providers appear only through Paseo's
+  agent records, with unknown usage.
 - Cost figures are a standard short-context API equivalent from a fixed price table, not a bill
   or subscription meter. No pricing or provider account API is contacted at runtime.
 - Message text, tool arguments, tool results, and credentials never leave the daemon parser.

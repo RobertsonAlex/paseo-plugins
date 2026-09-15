@@ -1,11 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { estimateCost } from "../shared/pricing";
 import { emptyMetrics, type Bucket, type Metrics, type MetricKey } from "../shared/schema";
-import { COUNT_KEYS, type ParsedTranscript } from "./parser";
+import { COUNT_KEYS, object, type ParsedTranscript } from "./parser";
 
 /** A session read from a provider's SQLite store. `messages` lets the indexer skip empty sessions. */
 export interface StoreSession { nativeId: string; parentId: string | null; archived: boolean; bytes: number; messages: number; parsed: ParsedTranscript }
-export type StoreReader = (db: DatabaseSync) => StoreSession[];
+export type StoreReader = (db: DatabaseSync, file: { mtimeMs: number }) => StoreSession[];
 
 type SqliteModule = typeof import("node:sqlite");
 type Row = Record<string, unknown>;
@@ -20,11 +21,11 @@ function loadSqlite(): SqliteModule | null {
 }
 
 /** Opens the store read-only and closes it before returning; the provider may be writing to it. */
-export function readStore(path: string, read: StoreReader): StoreSession[] {
+export function readStore(path: string, read: StoreReader, file: { mtimeMs: number }): StoreSession[] {
   const sqlite = loadSqlite();
   if (!sqlite) throw new Error("node:sqlite is unavailable");
   const db = new sqlite.DatabaseSync(path, { readOnly: true, timeout: 2_000 });
-  try { return read(db); } finally { db.close(); }
+  try { return read(db, file); } finally { db.close(); }
 }
 
 const num = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
@@ -79,9 +80,9 @@ class SessionBuilder {
     }
     if (tool) bucket.tools[tool] = (bucket.tools[tool] ?? 0) + 1;
   }
-  finish(base: Pick<ParsedTranscript, "nativeId" | "parentId" | "cwd" | "title" | "branch">, created: string | null, updated: string | null): ParsedTranscript {
+  finish(base: Pick<ParsedTranscript, "nativeId" | "parentId" | "cwd" | "title" | "branch">, created: string | null, updated: string | null, missingTokens = "No token usage records found; token and cost measurements are unknown."): ParsedTranscript {
     const buckets = [...this.buckets.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model) || (a.effort ?? "").localeCompare(b.effort ?? ""));
-    const warnings = buckets.some((bucket) => bucket.metrics.inputTokens !== null) ? [] : ["No token usage records found; token and cost measurements are unknown."];
+    const warnings = buckets.some((bucket) => bucket.metrics.inputTokens !== null) ? [] : [missingTokens];
     return { ...base, startedAt: this.startedAt ?? created, endedAt: this.endedAt ?? updated ?? created, buckets, warnings };
   }
 }
@@ -225,4 +226,89 @@ export const readDevinStore: StoreReader = (db) => {
     const base = { nativeId: str(row.id), parentId: null, cwd: str(row.cwd), title: str(row.title).slice(0, 300), branch: "" };
     return { nativeId: base.nativeId, parentId: null, archived: false, bytes: builder.bytes, messages: builder.messages, parsed: builder.finish(base, iso(row.created), iso(row.updated)) };
   });
+};
+
+/** Length-delimited and varint fields of a protobuf message; null when the bytes are not one. */
+function protobufFields(bytes: Uint8Array): { field: number; value: Uint8Array | number }[] | null {
+  const fields: { field: number; value: Uint8Array | number }[] = [];
+  let i = 0;
+  const varint = () => {
+    let value = 0, scale = 1;
+    while (i < bytes.length) {
+      const byte = bytes[i++];
+      value += (byte & 0x7f) * scale;
+      if (byte < 0x80) return value;
+      scale *= 128;
+    }
+    throw new Error("truncated varint");
+  };
+  try {
+    while (i < bytes.length) {
+      const key = varint(), field = Math.floor(key / 8), wire = key % 8;
+      if (wire === 0) fields.push({ field, value: varint() });
+      else if (wire === 2) { const length = varint(); if (i + length > bytes.length) return null; fields.push({ field, value: bytes.subarray(i, i + length) }); i += length; }
+      else if (wire === 1 || wire === 5) i += wire === 1 ? 8 : 4;
+      else return null;
+    }
+  } catch { return null; }
+  return fields;
+}
+
+const CURSOR_COUNT_KEYS = COUNT_KEYS.filter((key) => key !== "compactions");
+const CURSOR_MODEL = /^(.+)-(none|minimal|low|medium|high|xhigh|max)(-fast)?$/;
+/**
+ * Cursor agent: one store per session with content-addressed `blobs`. The latest root blob (protobuf) lists the
+ * conversation's message IDs in order; older roots and edited-away messages stay in the table and are ignored.
+ * Messages carry no timestamps or token usage.
+ */
+export const readCursorStore: StoreReader = (db, file) => {
+  let meta: Record<string, unknown>;
+  try { meta = object(JSON.parse(Buffer.from(str((db.prepare("SELECT value FROM meta WHERE key = '0'").get() as Row | undefined)?.value), "hex").toString("utf8"))); }
+  catch { return []; }
+  const nativeId = str(meta.agentId);
+  if (!nativeId) return [];
+  const root = (db.prepare("SELECT data FROM blobs WHERE id = ?").get(str(meta.latestRootBlobId)) as Row | undefined)?.data;
+  const fields = root instanceof Uint8Array ? protobufFields(root) ?? [] : [];
+  const text = (value: Uint8Array | number) => typeof value === "number" ? "" : Buffer.from(value).toString("utf8");
+  const ids = fields.filter((f) => f.field === 1 && typeof f.value !== "number" && f.value.length === 32).map((f) => Buffer.from(f.value as Uint8Array).toString("hex"));
+  const uri = fields.filter((f) => f.field === 9).map((f) => text(f.value)).find((value) => value.startsWith("file://"));
+  let cwd = "";
+  try { if (uri) cwd = fileURLToPath(uri); } catch { /* Not a local path. */ }
+  const parts = db.prepare(`SELECT ids.key AS position, length(CAST(b.data AS BLOB)) AS bytes, json_extract(CAST(b.data AS TEXT), '$.role') AS role,
+    iif(p.type = 'object', json_extract(p.value, '$.type'), 'text') AS type, iif(p.type = 'object', json_extract(p.value, '$.toolName'), NULL) AS tool,
+    iif(p.type = 'object', json_extract(p.value, '$.providerOptions.cursor.modelName'), NULL) AS model,
+    length(iif(p.type = 'text', p.value, iif(p.type = 'object', json_extract(p.value, '$.text'), NULL))) AS textLength,
+    iif(p.type = 'object', length(json_extract(p.value, '$.args')), NULL) AS inputLength,
+    iif(p.type = 'object', length(json_extract(p.value, '$.result')), NULL) AS outputLength,
+    coalesce(json_type(CAST(b.data AS TEXT), '$.providerOptions.cursor.highLevelToolCallResult.output.error'),
+      json_type(CAST(b.data AS TEXT), '$.providerOptions.cursor.highLevelToolCallResult.output.failure')) IS NOT NULL AS failed
+    FROM json_each(?) ids JOIN blobs b ON b.id = ids.value,
+    json_each(iif(json_valid(CAST(b.data AS TEXT)), CAST(b.data AS TEXT), '{}'), '$.content') p
+    ORDER BY ids.key, p.id`).all(JSON.stringify(ids)) as Row[];
+
+  const builder = new SessionBuilder(CURSOR_COUNT_KEYS);
+  const created = iso(meta.createdAt);
+  builder.time(created);
+  builder.time(iso(file.mtimeMs));
+  // Messages are undated, so everything lands on the session's start day. Early user messages take the first model.
+  const modelOf = (value: string) => { const match = CURSOR_MODEL.exec(value); return match ? { model: `${match[1]}${match[3] ?? ""}`, effort: match[2] } : { model: value, effort: null }; };
+  let context = modelOf(str(parts.find((part) => str(part.model))?.model) || str(meta.lastUsedModel) || "unknown");
+  let position: unknown = null;
+  for (const part of parts) {
+    const role = str(part.role);
+    if (part.model) context = modelOf(str(part.model));
+    const { model, effort } = context;
+    if (part.position !== position) {
+      position = part.position;
+      builder.bytes += num(part.bytes) ?? 0;
+      if (role === "user") { builder.messages++; builder.add(created, model, effort, { userMessages: 1 }); }
+      if (role === "assistant") { builder.messages++; builder.add(created, model, effort, { assistantMessages: 1 }); }
+    }
+    if (part.type === "text" && role === "user") builder.add(created, model, effort, { userCharacters: num(part.textLength) ?? 0 });
+    if (part.type === "text" && role === "assistant") builder.add(created, model, effort, { assistantCharacters: num(part.textLength) ?? 0 });
+    if (part.type === "tool-call") builder.add(created, model, effort, { toolCalls: 1, toolInputCharacters: num(part.inputLength) ?? 0 }, str(part.tool) || "unknown");
+    if (part.type === "tool-result") builder.add(created, model, effort, { toolOutputCharacters: num(part.outputLength) ?? 0, toolErrors: part.failed ? 1 : 0 });
+  }
+  const base = { nativeId, parentId: null, cwd, title: str(meta.name).slice(0, 300), branch: "" };
+  return [{ nativeId, parentId: null, archived: false, bytes: builder.bytes, messages: builder.messages, parsed: builder.finish(base, created, iso(file.mtimeMs), "Cursor keeps no token usage records locally; token and cost measurements are unknown.") }];
 };

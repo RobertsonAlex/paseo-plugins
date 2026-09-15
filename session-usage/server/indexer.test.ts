@@ -12,7 +12,7 @@ async function save(path: string, content: string) { await mkdir(dirname(path), 
 
 test("index joins archived metadata, deduplicates copies, keeps missing agents and refreshes changed files", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-usage-index-"));
-  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data") };
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data"), cursor: [join(root, "cursor")] };
   const index = new UsageIndex(roots);
   try {
     await save(join(roots.paseo, "projects", "projects.json"), JSON.stringify([{ projectId: "p", rootPath: "/project", customName: "Project", archivedAt: "2026-09-01" }]));
@@ -62,9 +62,9 @@ test("index joins archived metadata, deduplicates copies, keeps missing agents a
   } finally { index.dispose(); await rm(root, { recursive: true, force: true }); }
 });
 
-test("SQLite stores add OpenCode-family and Devin sessions, resolve custom provider IDs and label every provider", async () => {
+test("SQLite stores add OpenCode-family, Devin and Cursor sessions, resolve custom provider IDs and label every provider", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-usage-stores-"));
-  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data") };
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data"), cursor: [join(root, "cursor")] };
   const index = new UsageIndex(roots);
   const T0 = Date.parse("2026-09-10T12:00:00Z");
   try {
@@ -115,13 +115,39 @@ test("SQLite stores add OpenCode-family and Devin sessions, resolve custom provi
     node(5, assistant); // Compaction copy of the same message.
     devin.close();
 
+    // Cursor: hex JSON meta, a protobuf root listing message blob IDs, JSON message blobs and an orphaned stale blob.
+    const cursorStore = async (path: string, agentId: string, messages: object[]) => {
+      await mkdir(dirname(path), { recursive: true });
+      const db = new DatabaseSync(path);
+      db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
+      const insert = db.prepare("INSERT INTO blobs VALUES (?, ?)");
+      const field = (tag: number, bytes: Buffer) => Buffer.concat([Buffer.from([tag, bytes.length]), bytes]);
+      const ids = messages.map((message, i) => { const id = Buffer.alloc(32, i + 1); insert.run(id.toString("hex"), Buffer.from(JSON.stringify(message))); return id; });
+      insert.run(Buffer.alloc(32, 99).toString("hex"), Buffer.from(JSON.stringify({ role: "user", content: "PRIVATE_TRANSCRIPT_TEXT stale" })));
+      const root = Buffer.concat([...ids.map((id) => field(0x0a, id)), field(0x4a, Buffer.from("file:///worktree")), Buffer.from([0xd0, 0x01, 0x05])]);
+      insert.run("root", root);
+      db.prepare("INSERT INTO meta VALUES ('0', ?)").run(Buffer.from(JSON.stringify({ agentId, latestRootBlobId: "root", name: "Cursor task", createdAt: T0, blobEncryptionKey: "SECRET_MUST_NOT_LEAK" })).toString("hex"));
+      db.close();
+    };
+    const cursorModel = (name: string) => ({ providerOptions: { cursor: { modelName: name } } });
+    await cursorStore(join(roots.cursor[0], "acp-sessions", "cursor-session", "store.db"), "cursor-session", [
+      { role: "system", content: "PRIVATE_TRANSCRIPT_TEXT" },
+      { role: "user", content: [{ type: "text", text: "PRIVATE_TRANSCRIPT_TEXT" }] },
+      { role: "assistant", content: [{ type: "reasoning", text: "", signature: "x" }, { type: "text", text: "hello", ...cursorModel("cursor-grok-4.6-high") }, { type: "tool-call", toolCallId: "t1", toolName: "Read", args: { path: "PRIVATE_TOOL_INPUT" }, ...cursorModel("cursor-grok-4.6-high") }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "t1", toolName: "Read", result: "fail" }], providerOptions: { cursor: { highLevelToolCallResult: { output: { error: { errorMessage: "fail" } } } } } },
+      { role: "user", content: "again" },
+      { role: "assistant", content: [{ type: "text", text: "ok", ...cursorModel("cursor-grok-4.6-xhigh-fast") }] },
+    ]);
+    await cursorStore(join(roots.cursor[0], "chats", "md5", "cli-chat", "store.db"), "cli-chat", [{ role: "user", content: "hi" }]);
+    await mkdir(join(roots.cursor[0], "acp-sessions", "empty"), { recursive: true });
+
     index.snapshot();
     const snapshot = await index.settled();
     SnapshotSchema.parse(snapshot);
     const serialized = JSON.stringify(snapshot);
     for (const secret of ["SECRET_MUST_NOT_LEAK", "PRIVATE_TRANSCRIPT_TEXT", "PRIVATE_TOOL_INPUT"]) assert.ok(!serialized.includes(secret), secret);
     assert.deepEqual(snapshot.warnings, []);
-    assert.deepEqual(snapshot.sessions.map((s) => s.id).sort(), ["cursor:cursor-session", "devin:shared-jargon", "kilocode:ses_child", "kilocode:ses_linked", "kilocode:ses_outside"]);
+    assert.deepEqual(snapshot.sessions.map((s) => s.id).sort(), ["cursor:cli-chat", "cursor:cursor-session", "devin:shared-jargon", "kilocode:ses_child", "kilocode:ses_linked", "kilocode:ses_outside"]);
     const row = (sessions: typeof snapshot.sessions, id: string) => filterSessions(sessions, EMPTY_FILTERS).find((r) => r.session.id === id)!;
 
     const linked = row(snapshot.sessions, "kilocode:ses_linked");
@@ -149,10 +175,18 @@ test("SQLite stores add OpenCode-family and Devin sessions, resolve custom provi
     assert.deepEqual([d.inputTokens, d.outputTokens, d.requests, d.userMessages, d.assistantMessages, d.toolCalls, d.toolErrors, d.userCharacters, d.compactions, d.activeMs], [1203, 7, 1, 1, 1, 1, 1, 23, null, null]);
     assert.ok(Math.abs(d.estimatedCostUsd! - 3880 / 1e6) < 1e-12);
 
-    const cursor = row(snapshot.sessions, "cursor:cursor-session").session;
-    assert.equal(cursor.providerLabel, "Cursor");
-    assert.equal(cursor.coverage, "missing");
-    assert.match(cursor.warnings[0], /no local usage records/);
+    const cursor = row(snapshot.sessions, "cursor:cursor-session");
+    assert.equal(cursor.session.providerLabel, "Cursor");
+    assert.equal(cursor.session.agentId, "cursor-agent");
+    assert.equal(cursor.session.cwd, "/worktree");
+    assert.equal(cursor.session.coverage, "partial");
+    assert.match(cursor.session.warnings[0], /Cursor keeps no token usage/);
+    assert.equal(cursor.session.startedAt, new Date(T0).toISOString());
+    assert.deepEqual(cursor.buckets.map((b) => [b.model, b.effort]), [["cursor-grok-4.6", "high"], ["cursor-grok-4.6-fast", "xhigh"]]);
+    const c = cursor.metrics;
+    assert.deepEqual([c.inputTokens, c.estimatedCostUsd, c.userMessages, c.assistantMessages, c.toolCalls, c.toolErrors, c.userCharacters, c.assistantCharacters, c.toolOutputCharacters, c.compactions], [null, null, 2, 2, 1, 1, 28, 7, 4, null]);
+    assert.deepEqual(cursor.buckets.flatMap((b) => Object.entries(b.tools)), [["Read", 1]]);
+    assert.equal(row(snapshot.sessions, "cursor:cli-chat").session.agentId, null);
 
     const reopened = new DatabaseSync(kiloPath);
     insertMessage(reopened, "a2", "ses_linked", T0 + 6000, reply(T0 + 6000));
@@ -165,7 +199,7 @@ test("SQLite stores add OpenCode-family and Devin sessions, resolve custom provi
 
 test("unavailable provider directories produce an empty completed scan without mutating the host", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-usage-empty-"));
-  const index = new UsageIndex({ paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data") });
+  const index = new UsageIndex({ paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data"), cursor: [join(root, "cursor")] });
   try {
     index.snapshot();
     const snapshot = await index.settled();

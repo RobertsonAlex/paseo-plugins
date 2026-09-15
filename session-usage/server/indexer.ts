@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import { paseoHome } from "./paseo-home";
 import { object, string, parseTranscript, type ParsedTranscript } from "./parser";
-import { readDevinStore, readOpenCodeStore, readStore, type StoreReader, type StoreSession } from "./stores";
+import { readCursorStore, readDevinStore, readOpenCodeStore, readStore, type StoreReader, type StoreSession } from "./stores";
 import type { Session, Snapshot } from "../shared/schema";
 
 interface Source {
@@ -26,19 +26,34 @@ interface Metadata {
 interface Agent { id: string; nativeId: string; provider: string; workspaceId: string; cwd: string; title: string; archived: boolean; status: string; createdAt: string; model: string }
 interface Workspace { id: string; projectId: string; cwd: string; title: string; branch: string; labels: string[]; archived: boolean }
 interface Project { id: string; root: string; name: string; archived: boolean }
-export interface Roots { paseo: string; claude: string; codex: string; data: string }
+export interface Roots { paseo: string; claude: string; codex: string; data: string; cursor: string[] }
 
 const PROVIDER_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", copilot: "Copilot", opencode: "OpenCode", pi: "Pi", omp: "Oh My Pi", kilo: "Kilo", devin: "Devin", cursor: "Cursor" };
 function providerLabel(metadata: Metadata, provider: string): string {
   return metadata.providerLabels.get(provider) ?? PROVIDER_LABELS[provider] ?? `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
 }
-/** SQLite session stores under the XDG data directory, with the provider ID Paseo uses by default. */
-function sessionStores(data: string): { provider: string; path: string; read: StoreReader }[] {
+/** SQLite session stores, grouped per provider with the provider ID Paseo uses by default. Cursor keeps one store per session. */
+async function sessionStores(roots: Roots, warnings: Set<string>): Promise<{ provider: string; paths: string[]; read: StoreReader }[]> {
+  const cursor: string[] = [];
+  for (const root of roots.cursor) {
+    for (const session of await entries(join(root, "acp-sessions"), warnings)) if (session.isDirectory()) cursor.push(join(root, "acp-sessions", session.name, "store.db"));
+    for (const workspace of await entries(join(root, "chats"), warnings)) {
+      if (!workspace.isDirectory()) continue;
+      for (const session of await entries(join(root, "chats", workspace.name), warnings)) if (session.isDirectory()) cursor.push(join(root, "chats", workspace.name, session.name, "store.db"));
+    }
+  }
   return [
-    { provider: "opencode", path: join(data, "opencode", "opencode.db"), read: readOpenCodeStore },
-    { provider: "kilo", path: join(data, "kilo", "kilo.db"), read: readOpenCodeStore },
-    { provider: "devin", path: join(data, "devin", "cli", "sessions.db"), read: readDevinStore },
+    { provider: "opencode", paths: [join(roots.data, "opencode", "opencode.db")], read: readOpenCodeStore },
+    { provider: "kilo", paths: [join(roots.data, "kilo", "kilo.db")], read: readOpenCodeStore },
+    { provider: "devin", paths: [join(roots.data, "devin", "cli", "sessions.db")], read: readDevinStore },
+    { provider: "cursor", paths: cursor, read: readCursorStore },
   ];
+}
+/** Cursor's config directory: CURSOR_CONFIG_DIR, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`. The daemon may not share the agent's XDG setting, so both defaults are read. */
+function cursorRoots(): string[] {
+  const configured = process.env.CURSOR_CONFIG_DIR?.trim();
+  if (configured) return [configured];
+  return [...new Set([join(process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"), "cursor"), join(homedir(), ".cursor")])];
 }
 
 async function entries(path: string, warnings: Set<string>) {
@@ -169,7 +184,7 @@ export class UsageIndex {
   private controller = new AbortController();
   private running: Promise<void> | null = null;
   private lastScan = 0;
-  constructor(private roots: Roots = { paseo: paseoHome(), claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), codex: process.env.CODEX_HOME ?? join(homedir(), ".codex"), data: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share") }) {}
+  constructor(private roots: Roots = { paseo: paseoHome(), claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), codex: process.env.CODEX_HOME ?? join(homedir(), ".codex"), data: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), cursor: cursorRoots() }) {}
 
   snapshot(refresh = false): Snapshot {
     if (!this.controller.signal.aborted && !this.running && (refresh || !this.lastScan || Date.now() - this.lastScan > 30_000)) {
@@ -230,42 +245,57 @@ export class UsageIndex {
     const sessions: Session[] = [];
     const agentsByNativeId = new Map<string, Agent>();
     for (const agent of metadata.agents.values()) if (agent.nativeId && agent.provider !== "claude" && agent.provider !== "codex") agentsByNativeId.set(agent.nativeId, agent);
-    for (const store of sessionStores(this.roots.data)) {
-      if (this.controller.signal.aborted) throw new Error("Scan cancelled");
-      let signature: string;
-      try {
-        const [database, wal] = await Promise.all([stat(store.path), stat(`${store.path}-wal`).catch(() => null)]);
-        signature = `${database.size}:${database.mtimeMs}:${wal?.size ?? 0}:${wal?.mtimeMs ?? 0}`;
-      } catch (error) {
-        if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) warnings.add(`Cannot read session store: ${store.path}`);
-        this.storeCache.delete(store.path);
-        continue;
-      }
-      let cached = this.storeCache.get(store.path);
-      if (cached?.signature !== signature) {
+    const live = new Set<string>();
+    for (const group of await sessionStores(this.roots, warnings)) {
+      // A session copied into several stores counts once, from its largest copy.
+      const stored = new Map<string, { path: string; session: StoreSession }>();
+      let found = false;
+      for (const path of group.paths) {
+        if (this.controller.signal.aborted) throw new Error("Scan cancelled");
+        live.add(path);
+        let signature: string, mtimeMs: number;
         try {
-          cached = { signature, sessions: readStore(store.path, store.read) };
-          this.storeCache.set(store.path, cached);
-        } catch { warnings.add(`Cannot read session store: ${store.path}`); }
+          const [database, wal] = await Promise.all([stat(path), stat(`${path}-wal`).catch(() => null)]);
+          signature = `${database.size}:${database.mtimeMs}:${wal?.size ?? 0}:${wal?.mtimeMs ?? 0}`;
+          mtimeMs = Math.max(database.mtimeMs, wal?.mtimeMs ?? 0);
+        } catch (error) {
+          if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) warnings.add(`Cannot read session store: ${path}`);
+          this.storeCache.delete(path);
+          continue;
+        }
+        let cached = this.storeCache.get(path);
+        if (cached?.signature !== signature) {
+          try {
+            cached = { signature, sessions: readStore(path, group.read, { mtimeMs }) };
+            this.storeCache.set(path, cached);
+          } catch { warnings.add(`Cannot read session store: ${path}`); }
+        }
+        if (!cached) continue;
+        found = true;
+        for (const session of cached.sessions) {
+          const previous = stored.get(session.nativeId);
+          if (!previous || previous.session.bytes < session.bytes) stored.set(session.nativeId, { path, session });
+        }
       }
-      if (!cached) continue;
+      if (!found) continue;
       // Custom provider IDs are user-chosen, so unlinked sessions take the ID most linked sessions use.
       const linked = new Map<string, number>();
-      for (const session of cached.sessions) {
+      for (const { session } of stored.values()) {
         const provider = agentsByNativeId.get(session.nativeId)?.provider;
         if (provider) linked.set(provider, (linked.get(provider) ?? 0) + 1);
       }
-      const storeProvider = [...linked].sort((a, b) => b[1] - a[1])[0]?.[0] ?? store.provider;
+      const storeProvider = [...linked].sort((a, b) => b[1] - a[1])[0]?.[0] ?? group.provider;
       readable.add(storeProvider);
-      for (const session of cached.sessions) {
+      for (const { path, session } of stored.values()) {
         const agent = agentsByNativeId.get(session.nativeId);
         // Sessions without messages are skipped unless a Paseo agent owns them.
         if (!session.messages && !agent) continue;
         const provider = agent?.provider ?? storeProvider;
         readable.add(provider);
-        sessions.push(joinSession({ path: store.path, provider, nativeId: session.nativeId, parentId: session.parentId, kind: session.parentId ? "subagent" : "main", archived: session.archived, size: session.bytes, mtimeMs: 0 }, session.parsed, metadata));
+        sessions.push(joinSession({ path, provider, nativeId: session.nativeId, parentId: session.parentId, kind: session.parentId ? "subagent" : "main", archived: session.archived, size: session.bytes, mtimeMs: 0 }, session.parsed, metadata));
       }
     }
+    for (const path of this.storeCache.keys()) if (!live.has(path)) this.storeCache.delete(path);
     return sessions;
   }
 }
