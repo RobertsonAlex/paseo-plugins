@@ -15,7 +15,7 @@ profile routing** in the Command Center.
 
 | Mode | What happens |
 | --- | --- |
-| **Relay** (default) | Wait for the delegate and publish its final text as this turn's last assistant message. |
+| **Relay** (default) | Wait for the delegate and publish its final text as this turn's last assistant message. Consecutive relay turns continue in the same delegate while the script keeps picking the same `provider/model`. |
 | **Handoff** | Start the delegate, complete this turn immediately, then archive the router a few seconds later. |
 | **Detach** | Start the delegate and complete this turn immediately. The router stays. |
 
@@ -26,6 +26,15 @@ the `low` tier, so `min` also sends `low`.
 An info notification names the chosen settings model, provider, and delegate id. The assistant
 message is the run's final text: the delegate's answer in relay, or that same routing note in
 handoff and detach so the run output still says where the work went.
+
+## Relay continuation
+
+A relay turn keeps the conversation with the delegate that already has its history: when the script
+picks the `provider/model` the last delegate was created with, the prompt is sent to that delegate
+instead of a new one, and the notification reads `Continuing with …` rather than `Routing to …`. A
+different `provider/model`, an archived delegate, or one the daemon no longer knows starts a fresh
+one. Handoff and detach always create a delegate. The router remembers its last delegate in Paseo's
+session persistence, so a reopened chat continues where it left off.
 
 ## Models
 

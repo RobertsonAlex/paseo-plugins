@@ -30,6 +30,9 @@ interface FakeOptions {
   wait?: () => Promise<FinishResult>;
   created?: Array<unknown>;
   archives?: string[];
+  runs?: Array<{ agentId: string; text: string; timeoutMs?: number }>;
+  archived?: string[];
+  gone?: string[];
 }
 
 function fakePaseo(options: FakeOptions = {}): RoutingPaseo {
@@ -43,11 +46,21 @@ function fakePaseo(options: FakeOptions = {}): RoutingPaseo {
         return {
           workspaceId,
           async refresh() {
-            return { agent: { workspaceId } };
+            if (options.gone?.includes(id)) throw new Error(`Unknown agent: ${id}`);
+            return {
+              agent: {
+                workspaceId,
+                archivedAt: options.archived?.includes(id) ? "2026-09-15T20:00:00.000Z" : null,
+              },
+            };
           },
           async archive() {
             archives.push(id);
             return { archivedAt: "2026-09-15T20:00:00.000Z" };
+          },
+          async run(text, runOptions) {
+            options.runs?.push({ agentId: id, text, timeoutMs: runOptions?.timeoutMs });
+            return await wait();
           },
         };
       },
@@ -92,6 +105,13 @@ async function collect(
   return events;
 }
 
+// The delegate event only tells the caller what to persist; the chat shows notes and finals.
+function visible(events: Awaited<ReturnType<typeof collect>>) {
+  return events.filter((event) => event.type !== "delegate");
+}
+
+const lastDelegate = { delegateId: "delegate-1", provider: "claude/claude-haiku-4-5" };
+
 test("delegateTitle keeps the first line within 60 characters", () => {
   assert.equal(delegateTitle("agent", "pong"), "agent: pong");
   const long = delegateTitle("agent", "x".repeat(80));
@@ -108,7 +128,7 @@ test("a separate model is joined into the provider agents.create requires", asyn
       featureValues: { fast_mode: true },
     }),
   });
-  assert.deepEqual(events[0], {
+  assert.deepEqual(visible(events)[0], {
     type: "note",
     text: "Routing to agent (claude/claude-opus-5) as delegate-1.",
   });
@@ -132,6 +152,7 @@ test("relay idle yields the routing note then the delegate's last message", asyn
   const created: unknown[] = [];
   const events = await collect(fakePaseo({ created }));
   assert.deepEqual(events, [
+    { type: "delegate", delegateId: "delegate-1", provider: "claude/claude-haiku-4-5" },
     {
       type: "note",
       text: "Routing to agent (claude/claude-haiku-4-5) as delegate-1.",
@@ -149,6 +170,55 @@ test("relay idle yields the routing note then the delegate's last message", asyn
       },
     },
   ]);
+});
+
+test("relay sends to the last delegate when the provider is unchanged", async () => {
+  const created: unknown[] = [];
+  const runs: Array<{ agentId: string; text: string; timeoutMs?: number }> = [];
+  const events = await collect(fakePaseo({ created, runs }), { last: lastDelegate });
+  assert.deepEqual(events, [
+    { type: "note", text: "Continuing with agent (claude/claude-haiku-4-5) in delegate-1." },
+    { type: "final", text: "pong" },
+  ]);
+  assert.deepEqual(runs, [
+    { agentId: "delegate-1", text: "Reply with the single word pong.", timeoutMs: 120_000 },
+  ]);
+  assert.deepEqual(created, []);
+});
+
+test("relay creates a delegate when the picked provider changed", async () => {
+  const created: unknown[] = [];
+  const runs: Array<{ agentId: string; text: string }> = [];
+  const events = await collect(fakePaseo({ created, runs }), {
+    last: { delegateId: "delegate-0", provider: "codex/gpt-5.5" },
+  });
+  assert.deepEqual(visible(events)[0], {
+    type: "note",
+    text: "Routing to agent (claude/claude-haiku-4-5) as delegate-1.",
+  });
+  assert.equal(created.length, 1);
+  assert.deepEqual(runs, []);
+});
+
+test("relay creates a delegate when the last one is archived or gone", async () => {
+  const archivedCreated: unknown[] = [];
+  await collect(fakePaseo({ created: archivedCreated, archived: ["delegate-1"] }), {
+    last: lastDelegate,
+  });
+  assert.equal(archivedCreated.length, 1);
+  const goneCreated: unknown[] = [];
+  await collect(fakePaseo({ created: goneCreated, gone: ["delegate-1"] }), { last: lastDelegate });
+  assert.equal(goneCreated.length, 1);
+});
+
+test("handoff and detach always create a delegate", async () => {
+  for (const mode of ["handoff", "detach"] as const) {
+    const created: unknown[] = [];
+    const runs: Array<{ agentId: string; text: string }> = [];
+    await collect(fakePaseo({ created, runs }), { last: lastDelegate, mode });
+    assert.equal(created.length, 1, mode);
+    assert.deepEqual(runs, [], mode);
+  }
 });
 
 test("relay error fails with the delegate error", async () => {
@@ -210,8 +280,8 @@ test("relay interrupt cancels without archiving", async () => {
     pick: pickOk,
     signal: signal.signal,
   });
-  const first = await gen.next();
-  assert.equal(first.value?.type, "note");
+  assert.equal((await gen.next()).value?.type, "delegate");
+  assert.equal((await gen.next()).value?.type, "note");
   signal.abort();
   await assert.rejects(() => gen.next(), (error: unknown) => error instanceof RouteCanceled);
   release({ status: "idle", lastMessage: "too late", error: null });
@@ -223,7 +293,7 @@ test("handoff archives the router after the delay", async (t) => {
   const archives: string[] = [];
   const note = "Routing to agent (claude/claude-haiku-4-5) as delegate-1.";
   const events = await collect(fakePaseo({ archives }), { mode: "handoff" });
-  assert.deepEqual(events, [
+  assert.deepEqual(visible(events), [
     { type: "note", text: note },
     { type: "final", text: note },
   ]);
@@ -247,7 +317,7 @@ test("detach completes without waiting or archiving", async () => {
     }),
     { mode: "detach" },
   );
-  assert.deepEqual(events, [
+  assert.deepEqual(visible(events), [
     { type: "note", text: note },
     { type: "final", text: note },
   ]);

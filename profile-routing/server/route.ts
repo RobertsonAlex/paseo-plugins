@@ -17,8 +17,18 @@ export interface DelegateHandle {
 
 export interface RouterHandle {
   workspaceId: string | null;
-  refresh(): Promise<{ agent: { workspaceId?: string | null } } | null>;
+  refresh(): Promise<{
+    agent: { workspaceId?: string | null; archivedAt?: string | null };
+  } | null>;
   archive(): Promise<{ archivedAt: string }>;
+  /** Sends a prompt to an existing agent and resolves when that turn finishes. */
+  run(text: string, options?: { timeoutMs?: number }): Promise<FinishResult>;
+}
+
+/** The delegate a relay turn continues with while the script keeps picking the same provider. */
+export interface RelayTarget {
+  delegateId: string;
+  provider: string;
 }
 
 export type { AgentConfig, CreateAgentConfig };
@@ -42,6 +52,7 @@ export interface RoutingPaseo {
 }
 
 export type RouteEvent =
+  | { type: "delegate"; delegateId: string; provider: string }
   | { type: "note"; text: string }
   | { type: "final"; text: string };
 
@@ -74,6 +85,10 @@ export function routingNote(modelId: string, provider: string, delegateId: strin
   return `Routing to ${modelId} (${provider}) as ${delegateId}.`;
 }
 
+export function continuingNote(modelId: string, provider: string, delegateId: string): string {
+  return `Continuing with ${modelId} (${provider}) in ${delegateId}.`;
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new RouteCanceled();
 }
@@ -83,15 +98,14 @@ function delay(ms: number): Promise<void> {
 }
 
 async function waitWithAbort(
-  handle: DelegateHandle,
-  timeoutMs: number,
+  start: () => Promise<FinishResult>,
   signal?: AbortSignal,
 ): Promise<FinishResult | { status: "interrupted" }> {
   if (signal?.aborted) return { status: "interrupted" };
   return await new Promise((resolve, reject) => {
     const onAbort = () => resolve({ status: "interrupted" });
     signal?.addEventListener("abort", onAbort, { once: true });
-    handle.waitForFinish(timeoutMs).then(
+    start().then(
       (result) => {
         signal?.removeEventListener("abort", onAbort);
         resolve(result);
@@ -102,6 +116,46 @@ async function waitWithAbort(
       },
     );
   });
+}
+
+// A delegate is gone once it is archived, and refresh throws when it no longer exists.
+async function reusableDelegate(
+  paseo: RoutingPaseo,
+  last: RelayTarget | null,
+  provider: string,
+): Promise<RouterHandle | null> {
+  if (!last || last.provider !== provider) return null;
+  const handle = paseo.agents.ref(last.delegateId);
+  try {
+    const refreshed = await handle.refresh();
+    if (!refreshed || refreshed.agent.archivedAt) return null;
+    return handle;
+  } catch (error) {
+    console.error("profile-routing: reading the last delegate failed", error);
+    return null;
+  }
+}
+
+function* finishEvents(
+  finished: FinishResult | { status: "interrupted" },
+  delegateId: string,
+): Generator<RouteEvent, void> {
+  if (finished.status === "interrupted") throw new RouteCanceled();
+  if (finished.status === "idle") {
+    yield { type: "final", text: finished.lastMessage ?? "" };
+    return;
+  }
+  if (finished.status === "error") {
+    throw new RouteFailure(finished.error ?? `Delegate ${delegateId} failed`);
+  }
+  if (finished.status === "permission") {
+    throw new RouteFailure(
+      `Delegate ${delegateId} is waiting for permission and was left running`,
+    );
+  }
+  throw new RouteFailure(
+    `Delegate ${delegateId} did not finish within the relay timeout and was left running`,
+  );
 }
 
 async function workspaceIdOf(paseo: RoutingPaseo, routerAgentId: string): Promise<string | null> {
@@ -119,6 +173,7 @@ export async function* routeMessage(options: {
   text: string;
   timeouts: { relayTimeoutMs: number; archiveDelayMs: number };
   pick: (modelId: string, effort: EffortId) => Promise<AgentConfig>;
+  last?: RelayTarget | null;
   signal?: AbortSignal;
   delay?: (ms: number) => Promise<void>;
 }): AsyncGenerator<RouteEvent, void> {
@@ -139,6 +194,23 @@ export async function* routeMessage(options: {
 
   const created = createConfig(config);
   const provider = created.provider;
+
+  // Relay is a conversation: keep it with the delegate that already has the history.
+  if (options.mode === "relay") {
+    const last = options.last ?? null;
+    const existing = await reusableDelegate(options.paseo, last, provider);
+    throwIfAborted(options.signal);
+    if (existing && last) {
+      yield { type: "note", text: continuingNote(options.modelId, provider, last.delegateId) };
+      const finished = await waitWithAbort(
+        () => existing.run(options.text, { timeoutMs: options.timeouts.relayTimeoutMs }),
+        options.signal,
+      );
+      yield* finishEvents(finished, last.delegateId);
+      return;
+    }
+  }
+
   const delegate = await options.paseo.workspaces.ref(workspaceId).agents.create({
     config: created,
     prompt: options.text,
@@ -149,6 +221,7 @@ export async function* routeMessage(options: {
     },
   });
   const note = routingNote(options.modelId, provider, delegate.id);
+  yield { type: "delegate", delegateId: delegate.id, provider };
   yield { type: "note", text: note };
 
   if (options.mode === "handoff") {
@@ -163,21 +236,9 @@ export async function* routeMessage(options: {
     return;
   }
 
-  const finished = await waitWithAbort(delegate, options.timeouts.relayTimeoutMs, options.signal);
-  if (finished.status === "interrupted") throw new RouteCanceled();
-  if (finished.status === "idle") {
-    yield { type: "final", text: finished.lastMessage ?? "" };
-    return;
-  }
-  if (finished.status === "error") {
-    throw new RouteFailure(finished.error ?? `Delegate ${delegate.id} failed`);
-  }
-  if (finished.status === "permission") {
-    throw new RouteFailure(
-      `Delegate ${delegate.id} is waiting for permission and was left running`,
-    );
-  }
-  throw new RouteFailure(
-    `Delegate ${delegate.id} did not finish within the relay timeout and was left running`,
+  const finished = await waitWithAbort(
+    () => delegate.waitForFinish(options.timeouts.relayTimeoutMs),
+    options.signal,
   );
+  yield* finishEvents(finished, delegate.id);
 }

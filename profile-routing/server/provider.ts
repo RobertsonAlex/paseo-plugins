@@ -17,7 +17,14 @@ import {
   type ProfileRoutingSettings,
 } from "../shared/settings";
 import { EFFORT_IDS, pickFromScript, type EffortId } from "./pick";
-import { RouteCanceled, RouteFailure, routeMessage, type RouteMode, type RoutingPaseo } from "./route";
+import {
+  RouteCanceled,
+  RouteFailure,
+  routeMessage,
+  type RelayTarget,
+  type RouteMode,
+  type RoutingPaseo,
+} from "./route";
 
 const CAPABILITIES = [
   "prompt.message",
@@ -113,7 +120,22 @@ interface RouterSession {
   config: ProviderSessionConfig;
   persistence: ProviderPersistence;
   routerAgentId: string | null;
+  lastDelegate: RelayTarget | null;
   activeTurn: { turnId: string; abort: AbortController } | null;
+}
+
+function lastDelegateFrom(persistence: ProviderPersistence): RelayTarget | null {
+  const data = persistence.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return null;
+  const stored = (data as Record<string, unknown>).lastDelegate;
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored)) return null;
+  const { delegateId, provider } = stored as Record<string, unknown>;
+  if (typeof delegateId !== "string" || typeof provider !== "string") return null;
+  return { delegateId, provider };
+}
+
+function persistenceWith(delegate: RelayTarget): ProviderPersistence {
+  return { version: 1, data: { lastDelegate: { ...delegate } } };
 }
 
 export function createProfileRoutingProvider(options: {
@@ -276,6 +298,7 @@ async function openSession(
     },
     persistence,
     routerAgentId: input.config.env.PASEO_AGENT_ID ?? null,
+    lastDelegate: lastDelegateFrom(persistence),
     activeTurn: null,
   };
   state.sessions.set(input.sessionId, session);
@@ -387,10 +410,17 @@ async function runTurn(
       text,
       timeouts: timeoutsFrom(settings),
       signal: session.activeTurn.abort.signal,
+      last: session.lastDelegate,
       pick: (_id, effort) =>
         pickFromScript({ script: spec.script, effort, cwd: session.config.cwd }),
     })) {
       if (session.activeTurn?.turnId !== turnId) return;
+      if (event.type === "delegate") {
+        session.lastDelegate = { delegateId: event.delegateId, provider: event.provider };
+        session.persistence = persistenceWith(session.lastDelegate);
+        state.emit({ type: "session.persistence", sessionId, persistence: session.persistence });
+        continue;
+      }
       if (event.type === "note") {
         state.emit({
           type: "timeline.item",
