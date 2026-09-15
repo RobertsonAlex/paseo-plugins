@@ -19,8 +19,16 @@ export const AgentConfigSchema = z
 
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 
-export function providerLabel(config: AgentConfig): string {
+// agents.create takes the joined form only: config.provider must read "provider/model".
+export type CreateAgentConfig = Omit<AgentConfig, "model">;
+
+export function joinedProvider(config: AgentConfig): string {
   return config.model && !config.provider.includes("/")
     ? `${config.provider}/${config.model}`
     : config.provider;
+}
+
+export function createConfig(config: AgentConfig): CreateAgentConfig {
+  const { model: _model, ...rest } = config;
+  return { ...rest, provider: joinedProvider(config) };
 }

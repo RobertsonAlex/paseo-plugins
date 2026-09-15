@@ -8,6 +8,7 @@ import {
   delegateTitle,
   routeMessage,
   type AgentConfig,
+  type CreateAgentConfig,
   type DelegateHandle,
   type FinishResult,
   type RoutingPaseo,
@@ -98,7 +99,7 @@ test("delegateTitle keeps the first line within 60 characters", () => {
   assert.equal(long.endsWith("…"), true);
 });
 
-test("a separate model reaches agents.create unchanged and reads joined in the note", async () => {
+test("a separate model is joined into the provider agents.create requires", async () => {
   const created: unknown[] = [];
   const events = await collect(fakePaseo({ created }), {
     pick: async () => ({
@@ -111,10 +112,9 @@ test("a separate model reaches agents.create unchanged and reads joined in the n
     type: "note",
     text: "Routing to agent (claude/claude-opus-5) as delegate-1.",
   });
-  const input = created[0] as { config: AgentConfig };
+  const input = created[0] as { config: CreateAgentConfig };
   assert.deepEqual(input.config, {
-    provider: "claude",
-    model: "claude-opus-5",
+    provider: "claude/claude-opus-5",
     featureValues: { fast_mode: true },
   });
 });

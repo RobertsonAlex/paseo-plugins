@@ -21,7 +21,7 @@ import {
 
 const QUERY_KEY = ["profile-routing", "settings"] as const;
 const SCRIPT_EXAMPLE = `echo '{"provider":"claude","model":"claude-opus-5","modeId":"auto","thinkingOptionId":"$EFFORT"}'`;
-const SCRIPT_HINT = `The command must print the agent config Paseo creates agents with. A provider is required, either joined as "claude/claude-opus-5" or with model as its own field, and modeId, thinkingOptionId, featureValues, providerOptions, systemPrompt, and title are optional:\n${SCRIPT_EXAMPLE}`;
+const SCRIPT_HINT = `The command must print the agent config Paseo creates agents with. Name a provider and a model, either joined as "claude/claude-opus-5" or with model as its own field; modeId, thinkingOptionId, featureValues, providerOptions, systemPrompt, and title are optional:\n${SCRIPT_EXAMPLE}`;
 
 type DraftModel = { key: string; id: string; script: string };
 type Draft = {
@@ -328,7 +328,8 @@ function ScriptInput({
 }
 
 const styles = StyleSheet.create({
-  field: { gap: 8, paddingVertical: 8 },
+  // Settings cards leave padding to each row; match the built-in rows above and below.
+  field: { gap: 8, paddingHorizontal: 16, paddingVertical: 12 },
   label: { fontSize: 13, fontWeight: "600" },
   textareaWrap: {
     borderWidth: StyleSheet.hairlineWidth,

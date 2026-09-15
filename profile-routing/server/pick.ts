@@ -1,17 +1,25 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { AgentConfigSchema, providerLabel, type AgentConfig } from "../shared/agent-call";
+import {
+  AgentConfigSchema,
+  createConfig,
+  joinedProvider,
+  type AgentConfig,
+  type CreateAgentConfig,
+} from "../shared/agent-call";
 
-export { AgentConfigSchema, providerLabel, type AgentConfig };
+export { AgentConfigSchema, createConfig, joinedProvider, type AgentConfig, type CreateAgentConfig };
 
 const execFileAsync = promisify(execFile);
 
-export const EFFORT_IDS = ["min", "medium", "high", "max"] as const;
+export const EFFORT_IDS = ["min", "low", "medium", "high", "max"] as const;
 export type EffortId = (typeof EFFORT_IDS)[number];
 
-// "agent min" matches no model-pick tier; scripts that interpolate $EFFORT expect low/medium/high/max.
+// Scripts that interpolate $EFFORT expect a model-pick tier: low, medium, high, or max. Nothing
+// sits below low, so min sends low too.
 export const EFFORT_ENV: Record<EffortId, string> = {
   min: "low",
+  low: "low",
   medium: "medium",
   high: "high",
   max: "max",
@@ -30,6 +38,11 @@ export function parseAgentConfig(value: unknown): AgentConfig {
   const config = AgentConfigSchema.safeParse(value);
   if (!config.success) {
     throw new Error(`Model script JSON is not an agent config: ${config.error.message}`);
+  }
+  if (!joinedProvider(config.data).includes("/")) {
+    throw new Error(
+      `Model script JSON names a provider without a model: "${config.data.provider}". Agents need "provider/model".`,
+    );
   }
   return config.data;
 }
@@ -104,7 +117,7 @@ export async function testModelScript(script: string): Promise<{
 }> {
   try {
     const config = await pickFromScript({ script, effort: "medium" });
-    return { ok: true, config, provider: providerLabel(config) };
+    return { ok: true, config, provider: joinedProvider(config) };
   } catch (error) {
     return {
       ok: false,

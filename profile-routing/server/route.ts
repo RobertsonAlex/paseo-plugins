@@ -1,4 +1,4 @@
-import { providerLabel, type AgentConfig, type EffortId } from "./pick";
+import { createConfig, type AgentConfig, type CreateAgentConfig, type EffortId } from "./pick";
 
 export type RouteMode = "relay" | "handoff" | "detach";
 
@@ -21,7 +21,7 @@ export interface RouterHandle {
   archive(): Promise<{ archivedAt: string }>;
 }
 
-export type { AgentConfig };
+export type { AgentConfig, CreateAgentConfig };
 
 export interface RoutingPaseo {
   agents: {
@@ -31,7 +31,7 @@ export interface RoutingPaseo {
     ref(id: string): {
       agents: {
         create(options: {
-          config: AgentConfig;
+          config: CreateAgentConfig;
           prompt: string;
           title: string;
           labels: Record<string, string>;
@@ -137,9 +137,10 @@ export async function* routeMessage(options: {
   }
   throwIfAborted(options.signal);
 
-  const provider = providerLabel(config);
+  const created = createConfig(config);
+  const provider = created.provider;
   const delegate = await options.paseo.workspaces.ref(workspaceId).agents.create({
-    config,
+    config: created,
     prompt: options.text,
     title: config.title ?? delegateTitle(options.modelId, options.text),
     labels: {
