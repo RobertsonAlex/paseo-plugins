@@ -207,12 +207,11 @@ test("relay interrupt cancels without archiving", async () => {
 test("handoff archives the router after the delay", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const archives: string[] = [];
+  const note = "Routing to Agent Low · Claude (claude/claude-haiku-4-5) as delegate-1.";
   const events = await collect(fakePaseo({ archives }), { mode: "handoff" });
   assert.deepEqual(events, [
-    {
-      type: "note",
-      text: "Routing to Agent Low · Claude (claude/claude-haiku-4-5) as delegate-1.",
-    },
+    { type: "note", text: note },
+    { type: "final", text: note },
   ]);
   assert.deepEqual(archives, []);
   t.mock.timers.tick(3_000);
@@ -223,6 +222,7 @@ test("handoff archives the router after the delay", async (t) => {
 test("detach completes without waiting or archiving", async () => {
   const archives: string[] = [];
   let waited = false;
+  const note = "Routing to Agent Low · Claude (claude/claude-haiku-4-5) as delegate-1.";
   const events = await collect(
     fakePaseo({
       archives,
@@ -233,7 +233,10 @@ test("detach completes without waiting or archiving", async () => {
     }),
     { mode: "detach" },
   );
-  assert.equal(events.length, 1);
+  assert.deepEqual(events, [
+    { type: "note", text: note },
+    { type: "final", text: note },
+  ]);
   assert.equal(waited, false);
   assert.deepEqual(archives, []);
 });

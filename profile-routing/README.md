@@ -8,8 +8,8 @@ delegate or lets it run on its own.
 Schedules pin a provider at creation time. Pointing a schedule at this provider defers the real
 provider choice until the run fires.
 
-No settings screen and no client UI. The router's timeline uses built-in `user_message` and
-`assistant_message` items.
+No settings screen and no client UI. The router's timeline uses built-in `user_message`,
+`notification`, and `assistant_message` items.
 
 ## Modes
 
@@ -22,8 +22,9 @@ No settings screen and no client UI. The router's timeline uses built-in `user_m
 Thinking options `min`, `medium` (default), `high`, and `max` map to model-pick tiers
 `agent low`, `agent medium`, `agent high`, and `agent max`. There is no `agent min` tier.
 
-The first assistant message always names the chosen profile, provider, model, and delegate id.
-In relay, a second assistant message carries the delegate's final text.
+An info notification always names the chosen profile, provider, model, and delegate id. The
+assistant message is the run's final text: the delegate's answer in relay, or that same routing
+note in handoff and detach so the run output still says where the work went.
 
 ## Schedules
 

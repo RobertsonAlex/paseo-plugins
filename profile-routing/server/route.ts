@@ -162,18 +162,20 @@ export async function* routeMessage(options: {
       [PROFILE_LABEL]: chosen.profile.name,
     },
   });
-  yield {
-    type: "note",
-    text: routingNote(chosen.profile.name, chosen.call, delegate.id),
-  };
+  const note = routingNote(chosen.profile.name, chosen.call, delegate.id);
+  yield { type: "note", text: note };
 
   if (options.mode === "handoff") {
-    void (options.delay ?? delay)(options.timeouts.archiveDelayMs).then(() =>
-      options.paseo.agents.ref(options.routerAgentId).archive(),
-    );
+    void (options.delay ?? delay)(options.timeouts.archiveDelayMs)
+      .then(() => options.paseo.agents.ref(options.routerAgentId).archive())
+      .catch((error) => console.error("profile-routing: archiving the router failed", error));
+    yield { type: "final", text: note };
     return;
   }
-  if (options.mode === "detach") return;
+  if (options.mode === "detach") {
+    yield { type: "final", text: note };
+    return;
+  }
 
   const finished = await waitWithAbort(delegate, options.timeouts.relayTimeoutMs, options.signal);
   if (finished.status === "interrupted") throw new RouteCanceled();

@@ -340,7 +340,6 @@ async function runTurn(
   }
 
   try {
-    let note = 0;
     for await (const event of routeMessage({
       paseo,
       routerAgentId: session.routerAgentId,
@@ -351,13 +350,26 @@ async function runTurn(
       signal: session.activeTurn.abort.signal,
     })) {
       if (session.activeTurn?.turnId !== turnId) return;
-      note += 1;
+      // Notifications are not joined into the run's last assistant message.
+      if (event.type === "note") {
+        state.emit({
+          type: "timeline.item",
+          sessionId,
+          item: {
+            type: "notification",
+            id: `note:${turnId}`,
+            level: "info",
+            message: event.text,
+          },
+        });
+        continue;
+      }
       state.emit({
         type: "timeline.item",
         sessionId,
         item: {
           type: "assistant_message",
-          id: event.type === "final" ? `assistant:${turnId}:final` : `assistant:${turnId}:${note}`,
+          id: `assistant:${turnId}:final`,
           text: event.text,
         },
       });
