@@ -4,6 +4,7 @@ import {
   SettingsAction,
   SettingsCard,
   SettingsInput,
+  SettingsRow,
   SettingsSection,
 } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,12 +14,14 @@ import {
   getProfileRoutingSettings,
   ProfileRoutingSettingsSchema,
   setProfileRoutingSettings,
+  testProfileRoutingScript,
   type ProfileRoutingSettings,
+  type ScriptTestResult,
 } from "../shared/settings";
 
 const QUERY_KEY = ["profile-routing", "settings"] as const;
 const SCRIPT_EXAMPLE = `echo '{"provider":"claude","model":"claude-opus-5","modeId":"auto","thinkingOptionId":"$EFFORT"}'`;
-const SCRIPT_HINT = `The command must print JSON for the delegate, for example:\n${SCRIPT_EXAMPLE}`;
+const SCRIPT_HINT = `The command must print the agent config Paseo creates agents with. A provider is required, either joined as "claude/claude-opus-5" or with model as its own field, and modeId, thinkingOptionId, featureValues, providerOptions, systemPrompt, and title are optional:\n${SCRIPT_EXAMPLE}`;
 
 type DraftModel = { key: string; id: string; script: string };
 type Draft = {
@@ -45,6 +48,10 @@ function fromDraft(draft: Draft) {
     archiveDelaySeconds: draft.archiveDelaySeconds,
     models: draft.models.map(({ id, script }) => ({ id, script })),
   });
+}
+
+function formatTestResult(result: Extract<ScriptTestResult, { ok: true }>): string {
+  return `${result.provider}\n${JSON.stringify(result.config, null, 2)}`;
 }
 
 export function SettingsSurface(props: PluginSurfaceProps) {
@@ -79,7 +86,10 @@ function SettingsEditor({
   initialSettings,
 }: PluginSurfaceProps & { initialSettings: ProfileRoutingSettings }) {
   const [draft, setDraft] = useState(() => toDraft(initialSettings));
+  const [results, setResults] = useState<Record<string, ScriptTestResult>>({});
+  const [testingKey, setTestingKey] = useState<string | null>(null);
   const saveSettings = useRpc(setProfileRoutingSettings);
+  const testScript = useRpc(testProfileRoutingScript);
   const queryClient = useQueryClient();
   const toast = useToast();
   const mutation = useMutation({
@@ -88,6 +98,23 @@ function SettingsEditor({
       queryClient.setQueryData(QUERY_KEY, settings);
       setDraft(toDraft(settings));
       toast.show("Profile routing saved", { variant: "success" });
+    },
+  });
+  const testMutation = useMutation({
+    mutationFn: async ({ key, script }: { key: string; script: string }) => {
+      return { key, result: await testScript({ script }) };
+    },
+    onMutate({ key }) {
+      setTestingKey(key);
+    },
+    onSuccess({ key, result }) {
+      setResults((current) => ({ ...current, [key]: result }));
+    },
+    onError(error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
+    onSettled() {
+      setTestingKey(null);
     },
   });
   const parsed = fromDraft(draft);
@@ -101,6 +128,14 @@ function SettingsEditor({
         return true;
       })?.message ?? null
     );
+  };
+  const updateModel = (index: number, patch: Partial<Pick<DraftModel, "id" | "script">>) => {
+    setDraft((current) => ({
+      ...current,
+      models: current.models.map((entry, entryIndex) =>
+        entryIndex === index ? { ...entry, ...patch } : entry,
+      ),
+    }));
   };
 
   return (
@@ -133,50 +168,75 @@ function SettingsEditor({
         title="Models"
         info="Each model is a catalog id plus a shell command. The command runs with EFFORT from the thinking option (min maps to low)."
       >
-        {draft.models.map((model, index) => (
-          <SettingsCard key={model.key}>
-            <SettingsInput
-              label="Id"
-              initialValue={model.id}
-              onChangeText={(id) =>
-                setDraft((current) => ({
-                  ...current,
-                  models: current.models.map((entry, entryIndex) =>
-                    entryIndex === index ? { ...entry, id } : entry,
-                  ),
-                }))
-              }
-              disabled={mutation.isPending}
-              error={issue("models", index, "id") ?? (index === 0 ? issue("models") : null)}
-            />
-            <ScriptInput
-              compact={layout.compact}
-              disabled={mutation.isPending}
-              error={issue("models", index, "script")}
-              theme={theme}
-              value={model.script}
-              onChangeText={(script) =>
-                setDraft((current) => ({
-                  ...current,
-                  models: current.models.map((entry, entryIndex) =>
-                    entryIndex === index ? { ...entry, script } : entry,
-                  ),
-                }))
-              }
-            />
-            <SettingsAction
-              label="Remove this model"
-              actionLabel="Remove"
-              disabled={mutation.isPending || draft.models.length === 1}
-              onPress={() =>
-                setDraft((current) => ({
-                  ...current,
-                  models: current.models.filter((_, entryIndex) => entryIndex !== index),
-                }))
-              }
-            />
-          </SettingsCard>
-        ))}
+        {draft.models.map((model, index) => {
+          const result = results[model.key];
+          const testing = testingKey === model.key;
+          return (
+            <SettingsCard key={model.key}>
+              <SettingsInput
+                label="Id"
+                initialValue={model.id}
+                onChangeText={(id) => updateModel(index, { id })}
+                disabled={mutation.isPending}
+                error={issue("models", index, "id") ?? (index === 0 ? issue("models") : null)}
+              />
+              <ScriptInput
+                compact={layout.compact}
+                disabled={mutation.isPending}
+                error={issue("models", index, "script")}
+                theme={theme}
+                value={model.script}
+                onChangeText={(script) => {
+                  updateModel(index, { script });
+                  setResults((current) => {
+                    if (!(model.key in current)) return current;
+                    const next = { ...current };
+                    delete next[model.key];
+                    return next;
+                  });
+                }}
+              />
+              <SettingsAction
+                label="Run this script with EFFORT=medium"
+                actionLabel={testing ? "Testing…" : "Test"}
+                disabled={mutation.isPending || testMutation.isPending || model.script.trim().length === 0}
+                onPress={() => testMutation.mutate({ key: model.key, script: model.script })}
+              />
+              {result ? (
+                <SettingsRow
+                  label="Test result"
+                  hint="Ran with EFFORT=medium. Checks that the output is an agent config with a provider. No agent is created."
+                  error={result.ok ? null : result.error}
+                >
+                  {result.ok ? (
+                    <Text
+                      selectable
+                      style={{
+                        color: theme.colors.foreground,
+                        fontFamily: "monospace",
+                        fontSize: 12,
+                        lineHeight: 18,
+                      }}
+                    >
+                      {formatTestResult(result)}
+                    </Text>
+                  ) : null}
+                </SettingsRow>
+              ) : null}
+              <SettingsAction
+                label="Remove this model"
+                actionLabel="Remove"
+                disabled={mutation.isPending || draft.models.length === 1}
+                onPress={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    models: current.models.filter((_, entryIndex) => entryIndex !== index),
+                  }))
+                }
+              />
+            </SettingsCard>
+          );
+        })}
         <SettingsCard>
           <SettingsAction
             label="Add another catalog model"
@@ -221,34 +281,40 @@ function ScriptInput({
   onChangeText(text: string): void;
 }) {
   const colors = theme.colors;
+  const [focused, setFocused] = useState(false);
   return (
     <View style={styles.field}>
       <Text style={[styles.label, { color: colors.foreground }]}>Script</Text>
-      <TextInput
-        accessibilityLabel="Script"
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={!disabled}
-        multiline
-        numberOfLines={compact ? 6 : 8}
-        onChangeText={onChangeText}
-        placeholder={SCRIPT_EXAMPLE}
-        placeholderTextColor={colors.foregroundMuted}
-        selectionColor={colors.accent}
-        spellCheck={false}
+      <View
         style={[
-          styles.textarea,
+          styles.textareaWrap,
           {
-            minHeight: compact ? 132 : 176,
-            borderColor: error ? colors.statusDanger : colors.border,
+            minHeight: compact ? 148 : 192,
+            borderColor: error ? colors.statusDanger : focused ? colors.accent : colors.border,
             backgroundColor: colors.surface0,
-            color: colors.foreground,
             opacity: disabled ? 0.5 : 1,
           },
         ]}
-        textAlignVertical="top"
-        value={value}
-      />
+      >
+        <TextInput
+          accessibilityLabel="Script"
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!disabled}
+          multiline
+          numberOfLines={compact ? 6 : 8}
+          onBlur={() => setFocused(false)}
+          onChangeText={onChangeText}
+          onFocus={() => setFocused(true)}
+          placeholder={SCRIPT_EXAMPLE}
+          placeholderTextColor={colors.foregroundMuted}
+          selectionColor={colors.accent}
+          spellCheck={false}
+          style={[styles.textarea, { color: colors.foreground, outlineWidth: 0 }]}
+          textAlignVertical="top"
+          value={value}
+        />
+      </View>
       <Text selectable style={[styles.hint, { color: colors.foregroundMuted }]}>
         {SCRIPT_HINT}
       </Text>
@@ -262,17 +328,20 @@ function ScriptInput({
 }
 
 const styles = StyleSheet.create({
-  field: { gap: 6, paddingVertical: 4 },
+  field: { gap: 8, paddingVertical: 8 },
   label: { fontSize: 13, fontWeight: "600" },
-  textarea: {
+  textareaWrap: {
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 9,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    padding: 16,
+  },
+  textarea: {
+    flex: 1,
     fontSize: 16,
     lineHeight: 22,
     fontFamily: "monospace",
+    padding: 0,
+    margin: 0,
   },
   hint: { fontSize: 12, lineHeight: 18 },
 });
-

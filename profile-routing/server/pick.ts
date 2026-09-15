@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { z } from "zod";
+import { AgentConfigSchema, providerLabel, type AgentConfig } from "../shared/agent-call";
+
+export { AgentConfigSchema, providerLabel, type AgentConfig };
 
 const execFileAsync = promisify(execFile);
 
@@ -15,21 +17,21 @@ export const EFFORT_ENV: Record<EffortId, string> = {
   max: "max",
 };
 
-export const CreateAgentCallSchema = z
-  .object({
-    provider: z.string().min(1),
-    model: z.string().min(1).optional(),
-    modeId: z.string().optional(),
-    thinkingOptionId: z.string().optional(),
-    featureValues: z.record(z.string(), z.unknown()).optional(),
-  })
-  .strip();
-
-export type CreateAgentCall = z.infer<typeof CreateAgentCallSchema>;
-
-export function agentProvider(call: CreateAgentCall): string {
-  if (call.model && !call.provider.includes("/")) return `${call.provider}/${call.model}`;
-  return call.provider;
+export function parseAgentConfig(value: unknown): AgentConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Model script JSON must be an agent config object.");
+  }
+  const provider = (value as Record<string, unknown>).provider;
+  if (typeof provider !== "string" || provider.trim() === "") {
+    throw new Error(
+      'Model script JSON needs a provider, either "claude/opus-5" or "claude" with a separate model.',
+    );
+  }
+  const config = AgentConfigSchema.safeParse(value);
+  if (!config.success) {
+    throw new Error(`Model script JSON is not an agent config: ${config.error.message}`);
+  }
+  return config.data;
 }
 
 export interface RunCommandResult {
@@ -72,7 +74,7 @@ export async function pickFromScript(options: {
   effort: EffortId;
   cwd?: string;
   run?: typeof runShell;
-}): Promise<CreateAgentCall> {
+}): Promise<AgentConfig> {
   const result = await (options.run ?? runShell)(
     options.script,
     { ...process.env, EFFORT: EFFORT_ENV[options.effort] },
@@ -89,9 +91,24 @@ export async function pickFromScript(options: {
   } catch {
     throw new Error(`Model script did not print JSON: ${output.slice(0, 200)}`);
   }
-  const call = CreateAgentCallSchema.safeParse(parsed);
-  if (!call.success) {
-    throw new Error(`Model script JSON is not agent create options: ${call.error.message}`);
+  return parseAgentConfig(parsed);
+}
+
+export async function testModelScript(script: string): Promise<{
+  ok: true;
+  config: AgentConfig;
+  provider: string;
+} | {
+  ok: false;
+  error: string;
+}> {
+  try {
+    const config = await pickFromScript({ script, effort: "medium" });
+    return { ok: true, config, provider: providerLabel(config) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
-  return call.data;
 }

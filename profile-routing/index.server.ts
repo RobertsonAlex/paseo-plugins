@@ -2,7 +2,8 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { createProfileRoutingProvider } from "./server/provider";
 import { readProfileRoutingSettings, writeProfileRoutingSettings } from "./server/settings";
 import type { RoutingPaseo } from "./server/route";
-import { getProfileRoutingSettings, setProfileRoutingSettings } from "./shared/settings";
+import { getProfileRoutingSettings, setProfileRoutingSettings, testProfileRoutingScript } from "./shared/settings";
+import { testModelScript } from "./server/pick";
 
 export default function contribute(server: PluginServerContext) {
   let paseo: RoutingPaseo | undefined;
@@ -12,6 +13,7 @@ export default function contribute(server: PluginServerContext) {
   });
   server.handle(getProfileRoutingSettings, readProfileRoutingSettings);
   server.handle(setProfileRoutingSettings, writeProfileRoutingSettings);
+  server.handle(testProfileRoutingScript, ({ script }) => testModelScript(script));
   server.registerProvider(
     createProfileRoutingProvider({
       getPaseo: () => paseo,

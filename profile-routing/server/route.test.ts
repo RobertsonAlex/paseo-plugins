@@ -7,18 +7,18 @@ import {
   RouteFailure,
   delegateTitle,
   routeMessage,
-  type CreateAgentCall,
+  type AgentConfig,
   type DelegateHandle,
   type FinishResult,
   type RoutingPaseo,
 } from "./route";
 
-const call: CreateAgentCall = {
+const config: AgentConfig = {
   provider: "claude/claude-haiku-4-5",
   thinkingOptionId: "min",
 };
 
-const pickOk = async () => call;
+const pickOk = async () => config;
 
 const pickNone = async () => {
   throw new Error("Agent Low: no profile has allowance left; Agent Low · Claude resets in 6d");
@@ -98,23 +98,34 @@ test("delegateTitle keeps the first line within 60 characters", () => {
   assert.equal(long.endsWith("…"), true);
 });
 
-test("relay joins provider and model from pick JSON", async () => {
+test("a separate model reaches agents.create unchanged and reads joined in the note", async () => {
   const created: unknown[] = [];
   const events = await collect(fakePaseo({ created }), {
     pick: async () => ({
       provider: "claude",
       model: "claude-opus-5",
-      modeId: "auto",
-      thinkingOptionId: "low",
+      featureValues: { fast_mode: true },
     }),
   });
-  assert.equal(events[0]?.type, "note");
-  assert.equal(
-    events[0] && "text" in events[0] ? events[0].text : null,
-    "Routing to agent (claude/claude-opus-5) as delegate-1.",
-  );
-  const input = created[0] as { config: { provider: string; model?: string } };
-  assert.equal(input.config.provider, "claude/claude-opus-5");
+  assert.deepEqual(events[0], {
+    type: "note",
+    text: "Routing to agent (claude/claude-opus-5) as delegate-1.",
+  });
+  const input = created[0] as { config: AgentConfig };
+  assert.deepEqual(input.config, {
+    provider: "claude",
+    model: "claude-opus-5",
+    featureValues: { fast_mode: true },
+  });
+});
+
+test("a config title names the delegate", async () => {
+  const created: unknown[] = [];
+  await collect(fakePaseo({ created }), {
+    pick: async () => ({ provider: "claude/opus-5", title: "Named by the script" }),
+  });
+  const input = created[0] as { title: string };
+  assert.equal(input.title, "Named by the script");
 });
 
 test("relay idle yields the routing note then the delegate's last message", async () => {
@@ -129,12 +140,7 @@ test("relay idle yields the routing note then the delegate's last message", asyn
   ]);
   assert.deepEqual(created, [
     {
-      config: {
-        provider: "claude/claude-haiku-4-5",
-        modeId: undefined,
-        thinkingOptionId: "min",
-        featureValues: undefined,
-      },
+      config: { provider: "claude/claude-haiku-4-5", thinkingOptionId: "min" },
       prompt: "Reply with the single word pong.",
       title: "agent: Reply with the single word pong.",
       labels: {

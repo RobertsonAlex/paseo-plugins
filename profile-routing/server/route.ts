@@ -1,4 +1,4 @@
-import { agentProvider, type CreateAgentCall, type EffortId } from "./pick";
+import { providerLabel, type AgentConfig, type EffortId } from "./pick";
 
 export type RouteMode = "relay" | "handoff" | "detach";
 
@@ -21,7 +21,7 @@ export interface RouterHandle {
   archive(): Promise<{ archivedAt: string }>;
 }
 
-export type { CreateAgentCall };
+export type { AgentConfig };
 
 export interface RoutingPaseo {
   agents: {
@@ -31,12 +31,7 @@ export interface RoutingPaseo {
     ref(id: string): {
       agents: {
         create(options: {
-          config: {
-            provider: string;
-            modeId?: string;
-            thinkingOptionId?: string;
-            featureValues?: Record<string, unknown>;
-          };
+          config: AgentConfig;
           prompt: string;
           title: string;
           labels: Record<string, string>;
@@ -123,7 +118,7 @@ export async function* routeMessage(options: {
   effort: EffortId;
   text: string;
   timeouts: { relayTimeoutMs: number; archiveDelayMs: number };
-  pick: (modelId: string, effort: EffortId) => Promise<CreateAgentCall>;
+  pick: (modelId: string, effort: EffortId) => Promise<AgentConfig>;
   signal?: AbortSignal;
   delay?: (ms: number) => Promise<void>;
 }): AsyncGenerator<RouteEvent, void> {
@@ -132,9 +127,9 @@ export async function* routeMessage(options: {
   throwIfAborted(options.signal);
   if (!workspaceId) throw new RouteFailure("Router agent has no workspace");
 
-  let call: CreateAgentCall;
+  let config: AgentConfig;
   try {
-    call = await options.pick(options.modelId, options.effort);
+    config = await options.pick(options.modelId, options.effort);
   } catch (error) {
     throw error instanceof RouteFailure
       ? error
@@ -142,16 +137,11 @@ export async function* routeMessage(options: {
   }
   throwIfAborted(options.signal);
 
-  const provider = agentProvider(call);
+  const provider = providerLabel(config);
   const delegate = await options.paseo.workspaces.ref(workspaceId).agents.create({
-    config: {
-      provider,
-      modeId: call.modeId,
-      thinkingOptionId: call.thinkingOptionId,
-      featureValues: call.featureValues,
-    },
+    config,
     prompt: options.text,
-    title: delegateTitle(options.modelId, options.text),
+    title: config.title ?? delegateTitle(options.modelId, options.text),
     labels: {
       [ROUTER_LABEL]: options.routerAgentId,
       [PROFILE_LABEL]: options.modelId,

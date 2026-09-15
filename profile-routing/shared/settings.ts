@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { AgentConfigSchema } from "./agent-call";
 
 export const DEFAULT_PROFILE_ROUTING_SETTINGS = {
   relayTimeoutMinutes: 120,
@@ -63,4 +64,26 @@ export const setProfileRoutingSettings = defineRpc({
   name: "profile-routing.settings.set",
   input: ProfileRoutingSettingsSchema,
   output: ProfileRoutingSettingsSchema,
+});
+
+export const ScriptTestResultSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    provider: z.string().min(1),
+    config: AgentConfigSchema,
+  }),
+  z.object({
+    ok: z.literal(false),
+    error: z.string().min(1),
+  }),
+]);
+
+export type ScriptTestResult = z.infer<typeof ScriptTestResultSchema>;
+
+export const testProfileRoutingScript = defineRpc({
+  name: "profile-routing.settings.test",
+  input: z.object({
+    script: z.string().min(1, "Enter a shell command.").max(8_192, "The script is too long."),
+  }),
+  output: ScriptTestResultSchema,
 });

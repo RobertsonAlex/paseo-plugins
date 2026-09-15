@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentProvider, EFFORT_ENV, pickFromScript, type RunCommandResult } from "./pick";
+import {
+  EFFORT_ENV,
+  parseAgentConfig,
+  pickFromScript,
+  providerLabel,
+  testModelScript,
+  type RunCommandResult,
+} from "./pick";
 
 function run(result: Partial<RunCommandResult>): () => Promise<RunCommandResult> {
   return async () => ({
@@ -17,7 +24,7 @@ test("EFFORT_ENV maps min to low so agent $EFFORT matches a tier", () => {
 
 test("pickFromScript sets EFFORT from the thinking option", async () => {
   let env: NodeJS.ProcessEnv | undefined;
-  const call = await pickFromScript({
+  const config = await pickFromScript({
     script: "unused",
     effort: "min",
     async run(_script, received) {
@@ -26,11 +33,17 @@ test("pickFromScript sets EFFORT from the thinking option", async () => {
     },
   });
   assert.equal(env?.EFFORT, "low");
-  assert.deepEqual(call, { provider: "claude/sonnet-5" });
+  assert.deepEqual(config, { provider: "claude/sonnet-5" });
 });
 
-test("pickFromScript keeps model alongside provider", async () => {
-  const call = await pickFromScript({
+test("pickFromScript accepts a joined provider or a separate model", async () => {
+  const joined = await pickFromScript({
+    script: "unused",
+    effort: "medium",
+    run: run({ stdout: '{"provider":"claude/claude-opus-5","modeId":"auto"}' }),
+  });
+  assert.deepEqual(joined, { provider: "claude/claude-opus-5", modeId: "auto" });
+  const separate = await pickFromScript({
     script: "unused",
     effort: "high",
     run: run({
@@ -38,7 +51,7 @@ test("pickFromScript keeps model alongside provider", async () => {
         '{"provider":"claude","model":"claude-opus-5","modeId":"auto","thinkingOptionId":"high"}',
     }),
   });
-  assert.deepEqual(call, {
+  assert.deepEqual(separate, {
     provider: "claude",
     model: "claude-opus-5",
     modeId: "auto",
@@ -46,20 +59,27 @@ test("pickFromScript keeps model alongside provider", async () => {
   });
 });
 
-test("agentProvider joins provider and model when provider has no slash", () => {
-  assert.equal(agentProvider({ provider: "claude", model: "claude-opus-5" }), "claude/claude-opus-5");
-  assert.equal(agentProvider({ provider: "claude/sonnet-5" }), "claude/sonnet-5");
+test("providerLabel joins a bare provider with its model and leaves joined ones alone", () => {
+  assert.equal(providerLabel({ provider: "claude", model: "claude-opus-5" }), "claude/claude-opus-5");
+  assert.equal(providerLabel({ provider: "claude/sonnet-5" }), "claude/sonnet-5");
+  assert.equal(providerLabel({ provider: "claude" }), "claude");
 });
 
-test("pickFromScript strips unknown JSON fields", async () => {
-  const call = await pickFromScript({
+test("pickFromScript keeps the rest of the agent config and drops unknown fields", async () => {
+  const config = await pickFromScript({
     script: "unused",
     effort: "high",
     run: run({
-      stdout: '{"provider":"claude/sonnet-5","effort":"high","modeId":"auto"}',
+      stdout:
+        '{"provider":"codex","model":"gpt-5.5","featureValues":{"fast_mode":true},"systemPrompt":"be terse","effort":"high"}',
     }),
   });
-  assert.deepEqual(call, { provider: "claude/sonnet-5", modeId: "auto" });
+  assert.deepEqual(config, {
+    provider: "codex",
+    model: "gpt-5.5",
+    featureValues: { fast_mode: true },
+    systemPrompt: "be terse",
+  });
 });
 
 test("pickFromScript fails when the script exits non-zero", async () => {
@@ -74,7 +94,7 @@ test("pickFromScript fails when the script exits non-zero", async () => {
   );
 });
 
-test("pickFromScript fails when stdout is not create-agent JSON", async () => {
+test("pickFromScript fails when stdout is not JSON", async () => {
   await assert.rejects(
     () =>
       pickFromScript({
@@ -86,10 +106,31 @@ test("pickFromScript fails when stdout is not create-agent JSON", async () => {
   );
 });
 
+test("parseAgentConfig requires an object with a provider", () => {
+  assert.throws(() => parseAgentConfig({ model: "claude-opus-5" }), /needs a provider/);
+  assert.throws(() => parseAgentConfig({ provider: "  " }), /needs a provider/);
+  assert.throws(() => parseAgentConfig([]), /must be an agent config object/);
+  assert.deepEqual(parseAgentConfig({ provider: "claude/opus-5" }), { provider: "claude/opus-5" });
+});
+
 test("a shell script can interpolate $EFFORT", async () => {
-  const call = await pickFromScript({
-    script: `echo '{"provider":"claude/sonnet-5","thinkingOptionId":"'"$EFFORT"'"}'`,
+  const config = await pickFromScript({
+    script: `echo '{"provider":"claude","model":"sonnet-5","thinkingOptionId":"'"$EFFORT"'"}'`,
     effort: "max",
   });
-  assert.deepEqual(call, { provider: "claude/sonnet-5", thinkingOptionId: "max" });
+  assert.deepEqual(config, { provider: "claude", model: "sonnet-5", thinkingOptionId: "max" });
+});
+
+test("testModelScript reports contract failures without throwing", async () => {
+  const missing = await testModelScript("echo '{\"model\":\"opus-5\"}'");
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.match(missing.error, /needs a provider/);
+  const ok = await testModelScript(
+    `echo '{"provider":"claude","model":"opus-5","thinkingOptionId":"'"$EFFORT"'"}'`,
+  );
+  assert.equal(ok.ok, true);
+  if (ok.ok) {
+    assert.equal(ok.provider, "claude/opus-5");
+    assert.equal(ok.config.thinkingOptionId, "medium");
+  }
 });
