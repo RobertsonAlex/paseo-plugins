@@ -1,4 +1,4 @@
-import type { EffortId } from "./pick";
+import { agentProvider, type CreateAgentCall, type EffortId } from "./pick";
 
 export type RouteMode = "relay" | "handoff" | "detach";
 
@@ -21,12 +21,7 @@ export interface RouterHandle {
   archive(): Promise<{ archivedAt: string }>;
 }
 
-export interface CreateAgentCall {
-  provider: string;
-  modeId?: string;
-  thinkingOptionId?: string;
-  featureValues?: Record<string, unknown>;
-}
+export type { CreateAgentCall };
 
 export interface RoutingPaseo {
   agents: {
@@ -147,9 +142,10 @@ export async function* routeMessage(options: {
   }
   throwIfAborted(options.signal);
 
+  const provider = agentProvider(call);
   const delegate = await options.paseo.workspaces.ref(workspaceId).agents.create({
     config: {
-      provider: call.provider,
+      provider,
       modeId: call.modeId,
       thinkingOptionId: call.thinkingOptionId,
       featureValues: call.featureValues,
@@ -161,7 +157,7 @@ export async function* routeMessage(options: {
       [PROFILE_LABEL]: options.modelId,
     },
   });
-  const note = routingNote(options.modelId, call.provider, delegate.id);
+  const note = routingNote(options.modelId, provider, delegate.id);
   yield { type: "note", text: note };
 
   if (options.mode === "handoff") {

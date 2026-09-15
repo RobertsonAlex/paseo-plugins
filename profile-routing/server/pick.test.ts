@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EFFORT_ENV, pickFromScript, type RunCommandResult } from "./pick";
+import { agentProvider, EFFORT_ENV, pickFromScript, type RunCommandResult } from "./pick";
 
 function run(result: Partial<RunCommandResult>): () => Promise<RunCommandResult> {
   return async () => ({
@@ -27,6 +27,28 @@ test("pickFromScript sets EFFORT from the thinking option", async () => {
   });
   assert.equal(env?.EFFORT, "low");
   assert.deepEqual(call, { provider: "claude/sonnet-5" });
+});
+
+test("pickFromScript keeps model alongside provider", async () => {
+  const call = await pickFromScript({
+    script: "unused",
+    effort: "high",
+    run: run({
+      stdout:
+        '{"provider":"claude","model":"claude-opus-5","modeId":"auto","thinkingOptionId":"high"}',
+    }),
+  });
+  assert.deepEqual(call, {
+    provider: "claude",
+    model: "claude-opus-5",
+    modeId: "auto",
+    thinkingOptionId: "high",
+  });
+});
+
+test("agentProvider joins provider and model when provider has no slash", () => {
+  assert.equal(agentProvider({ provider: "claude", model: "claude-opus-5" }), "claude/claude-opus-5");
+  assert.equal(agentProvider({ provider: "claude/sonnet-5" }), "claude/sonnet-5");
 });
 
 test("pickFromScript strips unknown JSON fields", async () => {

@@ -18,6 +18,7 @@ export const EFFORT_ENV: Record<EffortId, string> = {
 export const CreateAgentCallSchema = z
   .object({
     provider: z.string().min(1),
+    model: z.string().min(1).optional(),
     modeId: z.string().optional(),
     thinkingOptionId: z.string().optional(),
     featureValues: z.record(z.string(), z.unknown()).optional(),
@@ -25,6 +26,11 @@ export const CreateAgentCallSchema = z
   .strip();
 
 export type CreateAgentCall = z.infer<typeof CreateAgentCallSchema>;
+
+export function agentProvider(call: CreateAgentCall): string {
+  if (call.model && !call.provider.includes("/")) return `${call.provider}/${call.model}`;
+  return call.provider;
+}
 
 export interface RunCommandResult {
   stdout: string;

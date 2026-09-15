@@ -42,7 +42,7 @@ Current plugins:
 - `vscode-open-remote`: adds a remote-editor pill, editor settings, desktop URI handling, and tablet
   `vscode.dev` support. It intentionally hides the pill on phones.
 - `profile-routing`: a provider plugin with a settings screen. An agent on a configured model
-  (default `profile-routing/agent`) runs that model's shell script with `EFFORT` from the thinking
+  (default `profile-routing/claude`) runs that model's shell script with `EFFORT` from the thinking
   option, creates a delegate from the JSON it prints in the same workspace, and either relays that
   answer or detaches/handoffs.
 

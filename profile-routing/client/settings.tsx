@@ -8,7 +8,7 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Text } from "react-native";
+import { StyleSheet, Text, TextInput, View } from "react-native";
 import {
   getProfileRoutingSettings,
   ProfileRoutingSettingsSchema,
@@ -17,6 +17,8 @@ import {
 } from "../shared/settings";
 
 const QUERY_KEY = ["profile-routing", "settings"] as const;
+const SCRIPT_EXAMPLE = `echo '{"provider":"claude","model":"claude-opus-5","modeId":"auto","thinkingOptionId":"$EFFORT"}'`;
+const SCRIPT_HINT = `The command must print JSON for the delegate, for example:\n${SCRIPT_EXAMPLE}`;
 
 type DraftModel = { key: string; id: string; script: string };
 type Draft = {
@@ -72,6 +74,8 @@ export function SettingsSurface(props: PluginSurfaceProps) {
 
 function SettingsEditor({
   host,
+  theme,
+  layout,
   initialSettings,
 }: PluginSurfaceProps & { initialSettings: ProfileRoutingSettings }) {
   const [draft, setDraft] = useState(() => toDraft(initialSettings));
@@ -127,7 +131,7 @@ function SettingsEditor({
       </SettingsSection>
       <SettingsSection
         title="Models"
-        info="Each model is a shell command. It runs with EFFORT set to low, medium, high, or max from the thinking option (min maps to low). Print JSON: { provider, modeId?, thinkingOptionId?, featureValues? }. provider is provider/model."
+        info="Each model is a catalog id plus a shell command. The command runs with EFFORT from the thinking option (min maps to low)."
       >
         {draft.models.map((model, index) => (
           <SettingsCard key={model.key}>
@@ -145,10 +149,12 @@ function SettingsEditor({
               disabled={mutation.isPending}
               error={issue("models", index, "id") ?? (index === 0 ? issue("models") : null)}
             />
-            <SettingsInput
-              label="Script"
-              hint='Example: ~/.agents/skills/model-pick/scripts/pick --tier "agent $EFFORT"'
-              initialValue={model.script}
+            <ScriptInput
+              compact={layout.compact}
+              disabled={mutation.isPending}
+              error={issue("models", index, "script")}
+              theme={theme}
+              value={model.script}
               onChangeText={(script) =>
                 setDraft((current) => ({
                   ...current,
@@ -157,8 +163,6 @@ function SettingsEditor({
                   ),
                 }))
               }
-              disabled={mutation.isPending}
-              error={issue("models", index, "script")}
             />
             <SettingsAction
               label="Remove this model"
@@ -200,3 +204,75 @@ function SettingsEditor({
     </>
   );
 }
+
+function ScriptInput({
+  compact,
+  disabled,
+  error,
+  theme,
+  value,
+  onChangeText,
+}: {
+  compact: boolean;
+  disabled: boolean;
+  error: string | null;
+  theme: PluginSurfaceProps["theme"];
+  value: string;
+  onChangeText(text: string): void;
+}) {
+  const colors = theme.colors;
+  return (
+    <View style={styles.field}>
+      <Text style={[styles.label, { color: colors.foreground }]}>Script</Text>
+      <TextInput
+        accessibilityLabel="Script"
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!disabled}
+        multiline
+        numberOfLines={compact ? 6 : 8}
+        onChangeText={onChangeText}
+        placeholder={SCRIPT_EXAMPLE}
+        placeholderTextColor={colors.foregroundMuted}
+        selectionColor={colors.accent}
+        spellCheck={false}
+        style={[
+          styles.textarea,
+          {
+            minHeight: compact ? 132 : 176,
+            borderColor: error ? colors.statusDanger : colors.border,
+            backgroundColor: colors.surface0,
+            color: colors.foreground,
+            opacity: disabled ? 0.5 : 1,
+          },
+        ]}
+        textAlignVertical="top"
+        value={value}
+      />
+      <Text selectable style={[styles.hint, { color: colors.foregroundMuted }]}>
+        {SCRIPT_HINT}
+      </Text>
+      {error ? (
+        <Text accessibilityRole="alert" style={[styles.hint, { color: colors.statusDanger }]}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  field: { gap: 6, paddingVertical: 4 },
+  label: { fontSize: 13, fontWeight: "600" },
+  textarea: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: "monospace",
+  },
+  hint: { fontSize: 12, lineHeight: 18 },
+});
+

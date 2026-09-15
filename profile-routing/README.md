@@ -28,31 +28,29 @@ handoff and detach so the run output still says where the work went.
 
 ## Models
 
-Each settings model has an id (the catalog model, for example `profile-routing/agent`) and a
+Each settings model has an id (the catalog model, for example `profile-routing/claude`) and a
 shell command. The command runs with `/bin/sh -c` and `EFFORT` in its environment. It must print
 JSON matching the agent-create config:
 
 ```json
 {
-  "provider": "claude/sonnet-5",
+  "provider": "claude",
+  "model": "claude-opus-5",
   "modeId": "auto",
-  "thinkingOptionId": "low",
-  "featureValues": {}
+  "thinkingOptionId": "low"
 }
 ```
 
-`provider` is `provider/model`. Extra fields are ignored. A non-zero exit or empty stdout fails
-the router turn.
+`provider` and `model` are joined as `provider/model` when `provider` has no slash. Extra
+fields are ignored. A non-zero exit or empty stdout fails the router turn.
 
-Shipped defaults:
+Shipped default:
 
 ```text
-agent: ~/.agents/skills/model-pick/scripts/pick --tier "agent $EFFORT"
-claude: echo '{"provider":"claude/sonnet-5", "effort":"$EFFORT"}'
+claude: echo '{"provider":"claude","model":"claude-opus-5","modeId":"auto","thinkingOptionId":"$EFFORT"}'
 ```
 
-The first model in the list is the catalog default. The `claude` line is a minimal example; the
-`agent` line expects a `pick` helper that prints the JSON above.
+The first model in the list is the catalog default. The `claude` line is a minimal example.
 
 ## Schedules
 
@@ -75,7 +73,7 @@ Timeouts and models are stored under
 | --- | --- | --- |
 | `relayTimeoutMinutes` | `120` | How long relay waits for the delegate |
 | `archiveDelaySeconds` | `3` | Delay before handoff archives the router |
-| `models` | `agent`, `claude` as above | Catalog models and their scripts |
+| `models` | `claude` as above | Catalog models and their scripts |
 
 ## Install
 

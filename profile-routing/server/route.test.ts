@@ -98,6 +98,25 @@ test("delegateTitle keeps the first line within 60 characters", () => {
   assert.equal(long.endsWith("…"), true);
 });
 
+test("relay joins provider and model from pick JSON", async () => {
+  const created: unknown[] = [];
+  const events = await collect(fakePaseo({ created }), {
+    pick: async () => ({
+      provider: "claude",
+      model: "claude-opus-5",
+      modeId: "auto",
+      thinkingOptionId: "low",
+    }),
+  });
+  assert.equal(events[0]?.type, "note");
+  assert.equal(
+    events[0] && "text" in events[0] ? events[0].text : null,
+    "Routing to agent (claude/claude-opus-5) as delegate-1.",
+  );
+  const input = created[0] as { config: { provider: string; model?: string } };
+  assert.equal(input.config.provider, "claude/claude-opus-5");
+});
+
 test("relay idle yields the routing note then the delegate's last message", async () => {
   const created: unknown[] = [];
   const events = await collect(fakePaseo({ created }));
