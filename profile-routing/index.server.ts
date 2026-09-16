@@ -18,10 +18,11 @@ export default function contribute(server: PluginServerContext) {
       await archiveRouterWhenDelegatesGone({
         paseo: context.paseo,
         archivedAgentId: event.agent.id,
-        enabled: settings.archiveWhenDelegatesArchived,
+        archiveRouter: settings.archiveWhenDelegatesArchived,
+        archiveWorkspace: settings.archiveWorkspaceWhenEmpty,
       });
     } catch (error) {
-      console.error("profile-routing: auto-archiving the router failed", error);
+      console.error("profile-routing: auto-archive failed", error);
     }
   });
   server.handle(getProfileRoutingSettings, readProfileRoutingSettings);

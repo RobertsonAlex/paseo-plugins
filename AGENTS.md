@@ -45,7 +45,8 @@ Current plugins:
   (default `profile-routing/claude`) runs that model's shell script with `EFFORT` from the thinking
   option, creates a delegate from the JSON it prints in the same workspace, and either relays that
   answer or detaches/handoffs. Routing notes link to the delegate; the router auto-archives when
-  every agent it started has been archived.
+  every agent it started has been archived, and then the workspace if nothing else is still running
+  there.
 
 ## Runtime boundaries
 

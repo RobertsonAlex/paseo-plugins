@@ -29,6 +29,7 @@ type Draft = {
   relayTimeoutMinutes: string;
   archiveDelaySeconds: string;
   archiveWhenDelegatesArchived: boolean;
+  archiveWorkspaceWhenEmpty: boolean;
   models: DraftModel[];
 };
 
@@ -37,6 +38,7 @@ function toDraft(settings: ProfileRoutingSettings): Draft {
     relayTimeoutMinutes: String(settings.relayTimeoutMinutes),
     archiveDelaySeconds: String(settings.archiveDelaySeconds),
     archiveWhenDelegatesArchived: settings.archiveWhenDelegatesArchived,
+    archiveWorkspaceWhenEmpty: settings.archiveWorkspaceWhenEmpty,
     models: settings.models.map((model, index) => ({
       key: `${model.id}-${index}`,
       id: model.id,
@@ -50,6 +52,7 @@ function fromDraft(draft: Draft) {
     relayTimeoutMinutes: draft.relayTimeoutMinutes,
     archiveDelaySeconds: draft.archiveDelaySeconds,
     archiveWhenDelegatesArchived: draft.archiveWhenDelegatesArchived,
+    archiveWorkspaceWhenEmpty: draft.archiveWorkspaceWhenEmpty,
     models: draft.models.map(({ id, script }) => ({ id, script })),
   });
 }
@@ -166,6 +169,10 @@ function SettingsEditor({
             disabled={mutation.isPending}
             error={issue("archiveDelaySeconds")}
           />
+        </SettingsCard>
+      </SettingsSection>
+      <SettingsSection title="Archive">
+        <SettingsCard>
           <SettingsSwitch
             label="Archive this router when its delegates are archived"
             hint="When every agent this conversation started has been archived, archive the router too. On by default."
@@ -174,6 +181,15 @@ function SettingsEditor({
               setDraft((current) => ({ ...current, archiveWhenDelegatesArchived }))
             }
             disabled={mutation.isPending}
+          />
+          <SettingsSwitch
+            label="Archive the workspace when the router is last"
+            hint="After the router is auto-archived, archive its workspace too if no other agents or terminals remain. On by default."
+            value={draft.archiveWorkspaceWhenEmpty}
+            onValueChange={(archiveWorkspaceWhenEmpty) =>
+              setDraft((current) => ({ ...current, archiveWorkspaceWhenEmpty }))
+            }
+            disabled={mutation.isPending || !draft.archiveWhenDelegatesArchived}
           />
         </SettingsCard>
       </SettingsSection>

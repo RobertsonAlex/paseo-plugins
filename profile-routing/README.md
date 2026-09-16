@@ -39,8 +39,9 @@ session persistence, so a reopened chat continues where it left off.
 ## Auto-archive
 
 On by default. When every delegate this router started is archived, the router is archived too.
-Turn it off under **Settings → Plugins → profile-routing**. Handoff still archives the router a
-few seconds after the turn ends, even if the delegate is still running.
+If that router was the last live agent and the workspace has no terminals, the workspace is
+archived as well. Both options live under **Settings → Plugins → profile-routing**. Handoff still
+archives the router a few seconds after the turn ends, even if the delegate is still running.
 
 ## Models
 
@@ -99,6 +100,7 @@ Timeouts and models are stored under
 | `relayTimeoutMinutes` | `120` | How long relay waits for the delegate |
 | `archiveDelaySeconds` | `3` | Delay before handoff archives the router |
 | `archiveWhenDelegatesArchived` | `true` | Archive the router once every delegate it started is archived |
+| `archiveWorkspaceWhenEmpty` | `true` | After that, archive the workspace if no other agents or terminals remain |
 | `models` | `claude` as above | Catalog models and their scripts |
 
 ## Install

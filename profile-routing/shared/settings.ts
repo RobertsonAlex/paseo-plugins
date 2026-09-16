@@ -6,6 +6,7 @@ export const DEFAULT_PROFILE_ROUTING_SETTINGS = {
   relayTimeoutMinutes: 120,
   archiveDelaySeconds: 3,
   archiveWhenDelegatesArchived: true,
+  archiveWorkspaceWhenEmpty: true,
   models: [
     {
       id: "claude",
@@ -31,6 +32,7 @@ export const ProfileRoutingSettingsSchema = z.object({
     .int()
     .nonnegative("Archive delay cannot be negative."),
   archiveWhenDelegatesArchived: z.boolean().default(true),
+  archiveWorkspaceWhenEmpty: z.boolean().default(true),
   models: z
     .array(
       z.object({
