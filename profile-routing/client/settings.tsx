@@ -6,6 +6,7 @@ import {
   SettingsInput,
   SettingsRow,
   SettingsSection,
+  SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -27,6 +28,7 @@ type DraftModel = { key: string; id: string; script: string };
 type Draft = {
   relayTimeoutMinutes: string;
   archiveDelaySeconds: string;
+  archiveWhenDelegatesArchived: boolean;
   models: DraftModel[];
 };
 
@@ -34,6 +36,7 @@ function toDraft(settings: ProfileRoutingSettings): Draft {
   return {
     relayTimeoutMinutes: String(settings.relayTimeoutMinutes),
     archiveDelaySeconds: String(settings.archiveDelaySeconds),
+    archiveWhenDelegatesArchived: settings.archiveWhenDelegatesArchived,
     models: settings.models.map((model, index) => ({
       key: `${model.id}-${index}`,
       id: model.id,
@@ -46,6 +49,7 @@ function fromDraft(draft: Draft) {
   return ProfileRoutingSettingsSchema.safeParse({
     relayTimeoutMinutes: draft.relayTimeoutMinutes,
     archiveDelaySeconds: draft.archiveDelaySeconds,
+    archiveWhenDelegatesArchived: draft.archiveWhenDelegatesArchived,
     models: draft.models.map(({ id, script }) => ({ id, script })),
   });
 }
@@ -161,6 +165,15 @@ function SettingsEditor({
             }
             disabled={mutation.isPending}
             error={issue("archiveDelaySeconds")}
+          />
+          <SettingsSwitch
+            label="Archive this router when its delegates are archived"
+            hint="When every agent this conversation started has been archived, archive the router too. On by default."
+            value={draft.archiveWhenDelegatesArchived}
+            onValueChange={(archiveWhenDelegatesArchived) =>
+              setDraft((current) => ({ ...current, archiveWhenDelegatesArchived }))
+            }
+            disabled={mutation.isPending}
           />
         </SettingsCard>
       </SettingsSection>

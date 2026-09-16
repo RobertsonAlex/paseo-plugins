@@ -6,6 +6,7 @@ import {
   RouteCanceled,
   RouteFailure,
   delegateTitle,
+  routingNote,
   routeMessage,
   type AgentConfig,
   type CreateAgentConfig,
@@ -111,6 +112,14 @@ function visible(events: Awaited<ReturnType<typeof collect>>) {
 }
 
 const lastDelegate = { delegateId: "delegate-1", provider: "claude/claude-haiku-4-5" };
+const routing = {
+  type: "note" as const,
+  continued: false,
+  modelId: "agent",
+  provider: "claude/claude-haiku-4-5",
+  delegateId: "delegate-1",
+};
+const continuing = { ...routing, continued: true };
 
 test("delegateTitle keeps the first line within 60 characters", () => {
   assert.equal(delegateTitle("agent", "pong"), "agent: pong");
@@ -129,8 +138,8 @@ test("a separate model is joined into the provider agents.create requires", asyn
     }),
   });
   assert.deepEqual(visible(events)[0], {
-    type: "note",
-    text: "Routing to agent (claude/claude-opus-5) as delegate-1.",
+    ...routing,
+    provider: "claude/claude-opus-5",
   });
   const input = created[0] as { config: CreateAgentConfig };
   assert.deepEqual(input.config, {
@@ -153,10 +162,7 @@ test("relay idle yields the routing note then the delegate's last message", asyn
   const events = await collect(fakePaseo({ created }));
   assert.deepEqual(events, [
     { type: "delegate", delegateId: "delegate-1", provider: "claude/claude-haiku-4-5" },
-    {
-      type: "note",
-      text: "Routing to agent (claude/claude-haiku-4-5) as delegate-1.",
-    },
+    routing,
     { type: "final", text: "pong" },
   ]);
   assert.deepEqual(created, [
@@ -177,7 +183,7 @@ test("relay sends to the last delegate when the provider is unchanged", async ()
   const runs: Array<{ agentId: string; text: string; timeoutMs?: number }> = [];
   const events = await collect(fakePaseo({ created, runs }), { last: lastDelegate });
   assert.deepEqual(events, [
-    { type: "note", text: "Continuing with agent (claude/claude-haiku-4-5) in delegate-1." },
+    continuing,
     { type: "final", text: "pong" },
   ]);
   assert.deepEqual(runs, [
@@ -192,10 +198,7 @@ test("relay creates a delegate when the picked provider changed", async () => {
   const events = await collect(fakePaseo({ created, runs }), {
     last: { delegateId: "delegate-0", provider: "codex/gpt-5.5" },
   });
-  assert.deepEqual(visible(events)[0], {
-    type: "note",
-    text: "Routing to agent (claude/claude-haiku-4-5) as delegate-1.",
-  });
+  assert.deepEqual(visible(events)[0], routing);
   assert.equal(created.length, 1);
   assert.deepEqual(runs, []);
 });
@@ -291,12 +294,9 @@ test("relay interrupt cancels without archiving", async () => {
 test("handoff archives the router after the delay", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const archives: string[] = [];
-  const note = "Routing to agent (claude/claude-haiku-4-5) as delegate-1.";
+  const note = routingNote("agent", "claude/claude-haiku-4-5", "delegate-1");
   const events = await collect(fakePaseo({ archives }), { mode: "handoff" });
-  assert.deepEqual(visible(events), [
-    { type: "note", text: note },
-    { type: "final", text: note },
-  ]);
+  assert.deepEqual(visible(events), [routing, { type: "final", text: note }]);
   assert.deepEqual(archives, []);
   t.mock.timers.tick(3_000);
   await Promise.resolve();
@@ -306,7 +306,7 @@ test("handoff archives the router after the delay", async (t) => {
 test("detach completes without waiting or archiving", async () => {
   const archives: string[] = [];
   let waited = false;
-  const note = "Routing to agent (claude/claude-haiku-4-5) as delegate-1.";
+  const note = routingNote("agent", "claude/claude-haiku-4-5", "delegate-1");
   const events = await collect(
     fakePaseo({
       archives,
@@ -317,10 +317,7 @@ test("detach completes without waiting or archiving", async () => {
     }),
     { mode: "detach" },
   );
-  assert.deepEqual(visible(events), [
-    { type: "note", text: note },
-    { type: "final", text: note },
-  ]);
+  assert.deepEqual(visible(events), [routing, { type: "final", text: note }]);
   assert.equal(waited, false);
   assert.deepEqual(archives, []);
 });

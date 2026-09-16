@@ -16,6 +16,12 @@ import {
   DEFAULT_PROFILE_ROUTING_SETTINGS,
   type ProfileRoutingSettings,
 } from "../shared/settings";
+import {
+  ROUTING_NOTE_KIND,
+  ROUTING_NOTE_VERSION,
+  ROUTING_PLUGIN_ID,
+  routingNoteText,
+} from "../shared/routing-note";
 import { EFFORT_IDS, pickFromScript, type EffortId } from "./pick";
 import {
   RouteCanceled,
@@ -32,6 +38,7 @@ const CAPABILITIES = [
   "session.configure",
   "session.archive",
   "session.unarchive",
+  "timeline.plugin",
 ] as const;
 
 const MODE_IDS = ["relay", "handoff", "detach"] as const;
@@ -188,7 +195,13 @@ function createConnection(
       if (closed) throw new Error("Provider connection is closed");
       validateAdmission(input, sessions, capabilities);
       if (input.type === "session.prompt") {
-        admitPrompt(input, { sessions, emit, getPaseo: options.getPaseo, readSettings: refreshSettings });
+        admitPrompt(input, {
+          sessions,
+          emit,
+          capabilities,
+          getPaseo: options.getPaseo,
+          readSettings: refreshSettings,
+        });
         return;
       }
       if (input.type === "session.interrupt") {
@@ -319,6 +332,7 @@ async function openSession(
 function admitPrompt(
   input: Extract<ProviderInput, { type: "session.prompt" }>,
   state: Pick<ConnectionState, "sessions" | "emit"> & {
+    capabilities: readonly string[];
     getPaseo: () => RoutingPaseo | undefined;
     readSettings: () => Promise<ProfileRoutingSettings>;
   },
@@ -363,7 +377,7 @@ async function runTurn(
   sessionId: string,
   turnId: string,
   text: string,
-  state: Pick<ConnectionState, "sessions" | "emit"> & {
+  state: Pick<ConnectionState, "sessions" | "emit" | "capabilities"> & {
     getPaseo: () => RoutingPaseo | undefined;
     readSettings: () => Promise<ProfileRoutingSettings>;
   },
@@ -422,16 +436,36 @@ async function runTurn(
         continue;
       }
       if (event.type === "note") {
-        state.emit({
-          type: "timeline.item",
-          sessionId,
-          item: {
-            type: "notification",
-            id: `note:${turnId}`,
-            level: "info",
-            message: event.text,
-          },
-        });
+        if (state.capabilities.includes("timeline.plugin")) {
+          state.emit({
+            type: "timeline.item",
+            sessionId,
+            item: {
+              type: "plugin",
+              id: `note:${turnId}`,
+              pluginId: ROUTING_PLUGIN_ID,
+              kind: ROUTING_NOTE_KIND,
+              version: ROUTING_NOTE_VERSION,
+              data: {
+                continued: event.continued,
+                modelId: event.modelId,
+                provider: event.provider,
+                delegateId: event.delegateId,
+              },
+            },
+          });
+        } else {
+          state.emit({
+            type: "timeline.item",
+            sessionId,
+            item: {
+              type: "notification",
+              id: `note:${turnId}`,
+              level: "info",
+              message: routingNoteText(event),
+            },
+          });
+        }
         continue;
       }
       state.emit({

@@ -44,7 +44,8 @@ Current plugins:
 - `profile-routing`: a provider plugin with a settings screen. An agent on a configured model
   (default `profile-routing/claude`) runs that model's shell script with `EFFORT` from the thinking
   option, creates a delegate from the JSON it prints in the same workspace, and either relays that
-  answer or detaches/handoffs.
+  answer or detaches/handoffs. Routing notes link to the delegate; the router auto-archives when
+  every agent it started has been archived.
 
 ## Runtime boundaries
 

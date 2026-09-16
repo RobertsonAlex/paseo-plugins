@@ -5,6 +5,7 @@ import { AgentConfigSchema } from "./agent-call";
 export const DEFAULT_PROFILE_ROUTING_SETTINGS = {
   relayTimeoutMinutes: 120,
   archiveDelaySeconds: 3,
+  archiveWhenDelegatesArchived: true,
   models: [
     {
       id: "claude",
@@ -29,6 +30,7 @@ export const ProfileRoutingSettingsSchema = z.object({
     .number()
     .int()
     .nonnegative("Archive delay cannot be negative."),
+  archiveWhenDelegatesArchived: z.boolean().default(true),
   models: z
     .array(
       z.object({

@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { createProfileRoutingProvider } from "./server/provider";
+import { archiveRouterWhenDelegatesGone } from "./server/archive";
 import { readProfileRoutingSettings, writeProfileRoutingSettings } from "./server/settings";
 import type { RoutingPaseo } from "./server/route";
 import { getProfileRoutingSettings, setProfileRoutingSettings, testProfileRoutingScript } from "./shared/settings";
@@ -11,6 +12,18 @@ export default function contribute(server: PluginServerContext) {
   const stopBefore = server.before("agent.session_open", (_input, context) => {
     paseo = context.paseo as unknown as RoutingPaseo;
   });
+  const stopArchived = server.on("agent.archived", async (event, context) => {
+    try {
+      const settings = await readProfileRoutingSettings();
+      await archiveRouterWhenDelegatesGone({
+        paseo: context.paseo,
+        archivedAgentId: event.agent.id,
+        enabled: settings.archiveWhenDelegatesArchived,
+      });
+    } catch (error) {
+      console.error("profile-routing: auto-archiving the router failed", error);
+    }
+  });
   server.handle(getProfileRoutingSettings, readProfileRoutingSettings);
   server.handle(setProfileRoutingSettings, writeProfileRoutingSettings);
   server.handle(testProfileRoutingScript, ({ script }) => testModelScript(script));
@@ -21,6 +34,7 @@ export default function contribute(server: PluginServerContext) {
     }),
   );
   return () => {
+    stopArchived();
     stopBefore();
   };
 }

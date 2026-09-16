@@ -1,5 +1,11 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { RoutingNote } from "./client/routing-note";
 import { SettingsSurface } from "./client/settings";
+import {
+  ROUTING_NOTE_KIND,
+  ROUTING_NOTE_VERSION,
+  RoutingNoteDataSchema,
+} from "./shared/routing-note";
 
 export default function contribute(client: PluginClientContext) {
   const removeSettings = client.addSettingsScreen({
@@ -18,7 +24,14 @@ export default function contribute(client: PluginClientContext) {
       openSettings("settings");
     },
   });
+  const removeRenderer = client.addTimelineRenderer({
+    kind: ROUTING_NOTE_KIND,
+    version: ROUTING_NOTE_VERSION,
+    schema: RoutingNoteDataSchema,
+    Component: RoutingNote,
+  });
   return () => {
+    removeRenderer();
     removeCommand();
     removeSettings();
   };

@@ -7,9 +7,9 @@ settings with `EFFORT` in the environment, creates a delegate from the JSON that
 Schedules pin a provider at creation time. Pointing a schedule at this provider defers the real
 provider choice until the run fires.
 
-The router's timeline uses built-in `user_message`, `notification`, and `assistant_message` items.
-Configure models and timeouts under **Settings → Plugins → profile-routing**, or **Configure
-profile routing** in the Command Center.
+The router's timeline uses a plugin routing-note row (with a clickable delegate id), plus built-in
+`user_message` and `assistant_message` items. Configure models and timeouts under **Settings →
+Plugins → profile-routing**, or **Configure profile routing** in the Command Center.
 
 ## Modes
 
@@ -23,18 +23,24 @@ Thinking options `min`, `low`, `medium` (default), `high`, and `max` are passed 
 as `EFFORT`, so a command such as `--tier "agent $EFFORT"` matches `agent low`. Nothing sits below
 the `low` tier, so `min` also sends `low`.
 
-An info notification names the chosen settings model, provider, and delegate id. The assistant
-message is the run's final text: the delegate's answer in relay, or that same routing note in
-handoff and detach so the run output still says where the work went.
+An info row names the chosen settings model, provider, and delegate id. The id is a link that
+opens that agent. The assistant message is the run's final text: the delegate's answer in relay,
+or that same routing note in handoff and detach so the run output still says where the work went.
 
 ## Relay continuation
 
 A relay turn keeps the conversation with the delegate that already has its history: when the script
 picks the `provider/model` the last delegate was created with, the prompt is sent to that delegate
-instead of a new one, and the notification reads `Continuing with …` rather than `Routing to …`. A
+instead of a new one, and the routing row reads `Continuing with …` rather than `Routing to …`. A
 different `provider/model`, an archived delegate, or one the daemon no longer knows starts a fresh
 one. Handoff and detach always create a delegate. The router remembers its last delegate in Paseo's
 session persistence, so a reopened chat continues where it left off.
+
+## Auto-archive
+
+On by default. When every delegate this router started is archived, the router is archived too.
+Turn it off under **Settings → Plugins → profile-routing**. Handoff still archives the router a
+few seconds after the turn ends, even if the delegate is still running.
 
 ## Models
 
@@ -92,6 +98,7 @@ Timeouts and models are stored under
 | --- | --- | --- |
 | `relayTimeoutMinutes` | `120` | How long relay waits for the delegate |
 | `archiveDelaySeconds` | `3` | Delay before handoff archives the router |
+| `archiveWhenDelegatesArchived` | `true` | Archive the router once every delegate it started is archived |
 | `models` | `claude` as above | Catalog models and their scripts |
 
 ## Install

@@ -1,3 +1,4 @@
+import { routingNoteText, type RoutingNoteData } from "../shared/routing-note";
 import { createConfig, type AgentConfig, type CreateAgentConfig, type EffortId } from "./pick";
 
 export type RouteMode = "relay" | "handoff" | "detach";
@@ -53,7 +54,7 @@ export interface RoutingPaseo {
 
 export type RouteEvent =
   | { type: "delegate"; delegateId: string; provider: string }
-  | { type: "note"; text: string }
+  | ({ type: "note" } & RoutingNoteData)
   | { type: "final"; text: string };
 
 export class RouteFailure extends Error {
@@ -82,11 +83,20 @@ export function delegateTitle(profileName: string, text: string): string {
 }
 
 export function routingNote(modelId: string, provider: string, delegateId: string): string {
-  return `Routing to ${modelId} (${provider}) as ${delegateId}.`;
+  return routingNoteText({ continued: false, modelId, provider, delegateId });
 }
 
 export function continuingNote(modelId: string, provider: string, delegateId: string): string {
-  return `Continuing with ${modelId} (${provider}) in ${delegateId}.`;
+  return routingNoteText({ continued: true, modelId, provider, delegateId });
+}
+
+function noteEvent(
+  continued: boolean,
+  modelId: string,
+  provider: string,
+  delegateId: string,
+): Extract<RouteEvent, { type: "note" }> {
+  return { type: "note", continued, modelId, provider, delegateId };
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -201,7 +211,7 @@ export async function* routeMessage(options: {
     const existing = await reusableDelegate(options.paseo, last, provider);
     throwIfAborted(options.signal);
     if (existing && last) {
-      yield { type: "note", text: continuingNote(options.modelId, provider, last.delegateId) };
+      yield noteEvent(true, options.modelId, provider, last.delegateId);
       const finished = await waitWithAbort(
         () => existing.run(options.text, { timeoutMs: options.timeouts.relayTimeoutMs }),
         options.signal,
@@ -222,7 +232,7 @@ export async function* routeMessage(options: {
   });
   const note = routingNote(options.modelId, provider, delegate.id);
   yield { type: "delegate", delegateId: delegate.id, provider };
-  yield { type: "note", text: note };
+  yield noteEvent(false, options.modelId, provider, delegate.id);
 
   if (options.mode === "handoff") {
     void (options.delay ?? delay)(options.timeouts.archiveDelayMs)
