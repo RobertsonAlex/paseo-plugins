@@ -159,6 +159,13 @@ test("tokens remain unknown without usage, and reported turn times preserve cale
   assert.equal(result.metrics.activeMs, 60_000);
   assert.equal(result.startedAt, date);
   assert.equal(result.buckets[0].day, "2026-09-02");
+  assert.equal(result.buckets[0].hour, 0);
+});
+
+test("activity is bucketed per UTC hour and undated records have no hour", () => {
+  const assistant = (id: string, timestamp?: string) => ({ type: "assistant", uuid: id, timestamp, message: { id, model: "claude-fable-5", usage: { input_tokens: 10, output_tokens: 1 }, content: [] } });
+  const result = parse("claude", [assistant("undated"), assistant("a", "2026-09-01T13:59:59.000Z"), assistant("b", "2026-09-01T14:00:00.000Z"), assistant("c", "2026-09-01T13:10:00+02:00")]);
+  assert.deepEqual(result.buckets.map((b) => [b.day, b.hour, b.metrics.inputTokens]), [["2026-09-01", 11, 10], ["2026-09-01", 13, 10], ["2026-09-01", 14, 10], ["unknown", null, 10]]);
 });
 
 test("negative/nonfinite usage is rejected and reasoning is not added to output", () => {

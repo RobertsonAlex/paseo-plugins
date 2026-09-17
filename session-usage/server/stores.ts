@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { estimateCost } from "../shared/pricing";
 import { emptyMetrics, type Bucket, type Metrics, type MetricKey } from "../shared/schema";
-import { COUNT_KEYS, object, type ParsedTranscript } from "./parser";
+import { COUNT_KEYS, compareBuckets, object, type ParsedTranscript } from "./parser";
 
 /** A session read from a provider's SQLite store. `messages` lets the indexer skip empty sessions. */
 export interface StoreSession { nativeId: string; parentId: string | null; archived: boolean; bytes: number; messages: number; parsed: ParsedTranscript }
@@ -67,10 +67,11 @@ class SessionBuilder {
   }
   add(at: string | null, model: string, effort: string | null, metrics: Partial<Metrics>, tool?: string): void {
     const day = at?.slice(0, 10) ?? "unknown";
-    const key = JSON.stringify([day, model, effort]);
+    const hour = at ? Number(at.slice(11, 13)) : null;
+    const key = JSON.stringify([day, hour, model, effort]);
     let bucket = this.buckets.get(key);
     if (!bucket) {
-      bucket = { day, model, effort, metrics: emptyMetrics(), tools: Object.create(null) as Record<string, number> };
+      bucket = { day, hour, model, effort, metrics: emptyMetrics(), tools: Object.create(null) as Record<string, number> };
       // Absence of a recorded event is a known zero only for measurements the store records.
       for (const metric of this.countKeys) bucket.metrics[metric] = 0;
       this.buckets.set(key, bucket);
@@ -81,7 +82,7 @@ class SessionBuilder {
     if (tool) bucket.tools[tool] = (bucket.tools[tool] ?? 0) + 1;
   }
   finish(base: Pick<ParsedTranscript, "nativeId" | "parentId" | "cwd" | "title" | "branch">, created: string | null, updated: string | null, missingTokens = "No token usage records found; token and cost measurements are unknown."): ParsedTranscript {
-    const buckets = [...this.buckets.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model) || (a.effort ?? "").localeCompare(b.effort ?? ""));
+    const buckets = [...this.buckets.values()].sort(compareBuckets);
     const warnings = buckets.some((bucket) => bucket.metrics.inputTokens !== null) ? [] : [missingTokens];
     return { ...base, startedAt: this.startedAt ?? created, endedAt: this.endedAt ?? updated ?? created, buckets, warnings };
   }

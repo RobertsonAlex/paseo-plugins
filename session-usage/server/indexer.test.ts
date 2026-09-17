@@ -170,7 +170,7 @@ test("SQLite stores add OpenCode-family, Devin and Cursor sessions, resolve cust
     const devinRow = row(snapshot.sessions, "devin:shared-jargon");
     assert.equal(devinRow.session.providerLabel, "Devin");
     assert.equal(devinRow.session.agentId, "devin-agent");
-    assert.deepEqual(devinRow.buckets.map((b) => [b.model, b.effort]), [["gpt-6-astra", "medium"], ["unknown", null]]);
+    assert.deepEqual(devinRow.buckets.map((b) => [b.model, b.effort, b.hour]), [["gpt-6-astra", "medium", 12], ["unknown", null, 12]]);
     const d = devinRow.metrics;
     assert.deepEqual([d.inputTokens, d.outputTokens, d.requests, d.userMessages, d.assistantMessages, d.toolCalls, d.toolErrors, d.userCharacters, d.compactions, d.activeMs], [1203, 7, 1, 1, 1, 1, 1, 23, null, null]);
     assert.ok(Math.abs(d.estimatedCostUsd! - 3880 / 1e6) < 1e-12);
@@ -182,7 +182,7 @@ test("SQLite stores add OpenCode-family, Devin and Cursor sessions, resolve cust
     assert.equal(cursor.session.coverage, "partial");
     assert.match(cursor.session.warnings[0], /Cursor keeps no token usage/);
     assert.equal(cursor.session.startedAt, new Date(T0).toISOString());
-    assert.deepEqual(cursor.buckets.map((b) => [b.model, b.effort]), [["cursor-grok-4.6", "high"], ["cursor-grok-4.6-fast", "xhigh"]]);
+    assert.deepEqual(cursor.buckets.map((b) => [b.model, b.effort, b.hour]), [["cursor-grok-4.6", "high", 12], ["cursor-grok-4.6-fast", "xhigh", 12]]);
     const c = cursor.metrics;
     assert.deepEqual([c.inputTokens, c.estimatedCostUsd, c.userMessages, c.assistantMessages, c.toolCalls, c.toolErrors, c.userCharacters, c.assistantCharacters, c.toolOutputCharacters, c.compactions], [null, null, 2, 2, 1, 1, 28, 7, 4, null]);
     assert.deepEqual(cursor.buckets.flatMap((b) => Object.entries(b.tools)), [["Read", 1]]);

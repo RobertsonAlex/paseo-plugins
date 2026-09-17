@@ -39,7 +39,7 @@ export interface ParsedTranscript {
   buckets: Bucket[];
   warnings: string[];
 }
-interface Contribution { day: string; model: string; effort: string | null; metrics: Metrics; tools: Record<string, number> }
+interface Contribution { day: string; hour: number | null; model: string; effort: string | null; metrics: Metrics; tools: Record<string, number> }
 function recordedEffort(value: unknown): string | null {
   const effort = string(value).trim().toLowerCase();
   return /^[a-z][a-z0-9_-]{0,31}$/.test(effort) ? effort : null;
@@ -70,12 +70,15 @@ export function normalizeUsage(provider: "claude" | "codex", usage: RecordValue)
   return m;
 }
 
+export const compareBuckets = (a: Bucket, b: Bucket): number => a.day.localeCompare(b.day) || (a.hour ?? -1) - (b.hour ?? -1) || a.model.localeCompare(b.model) || (a.effort ?? "").localeCompare(b.effort ?? "");
+
 /** Retains only counters, hashes and identifiers; never message bodies or tool arguments. */
 export class TranscriptParser {
   private result: ParsedTranscript = { nativeId: "", parentId: null, cwd: "", title: "", branch: "", startedAt: null, endedAt: null, buckets: [], warnings: [] };
   private model = "unknown";
   private effort: string | null = null;
   private day = "unknown";
+  private hour: number | null = null;
   private records = new Set<string>();
   private contributions = new Map<string, Contribution>();
   private totalUsage: Metrics | null = null;
@@ -95,7 +98,7 @@ export class TranscriptParser {
   private contribution(id: string): Contribution {
     let entry = this.contributions.get(id);
     if (!entry) {
-      entry = { day: this.day, model: this.model, effort: this.effort, metrics: emptyMetrics(), tools: Object.create(null) as Record<string, number> };
+      entry = { day: this.day, hour: this.hour, model: this.model, effort: this.effort, metrics: emptyMetrics(), tools: Object.create(null) as Record<string, number> };
       this.contributions.set(id, entry);
     }
     return entry;
@@ -107,6 +110,7 @@ export class TranscriptParser {
   private rememberTime(time: string | null): void {
     if (!time) return;
     this.day = time.slice(0, 10);
+    this.hour = Number(time.slice(11, 13));
     if (!this.result.startedAt || time < this.result.startedAt) this.result.startedAt = time;
     if (!this.result.endedAt || time > this.result.endedAt) this.result.endedAt = time;
   }
@@ -299,10 +303,10 @@ export class TranscriptParser {
         continue;
       }
       if (id.startsWith("usage:") || id.startsWith("legacy-usage:")) entry.metrics.estimatedCostUsd = estimateCost(entry.model, entry.metrics);
-      const key = JSON.stringify([entry.day, entry.model, entry.effort]);
+      const key = JSON.stringify([entry.day, entry.hour, entry.model, entry.effort]);
       let bucket = buckets.get(key);
       if (!bucket) {
-        bucket = { day: entry.day, model: entry.model, effort: entry.effort, metrics: emptyMetrics(), tools: Object.create(null) as Record<string, number> };
+        bucket = { day: entry.day, hour: entry.hour, model: entry.model, effort: entry.effort, metrics: emptyMetrics(), tools: Object.create(null) as Record<string, number> };
         // Absence of a recorded event is a known zero only for a readable transcript.
         for (const metric of COUNT_KEYS) bucket.metrics[metric] = 0;
         buckets.set(key, bucket);
@@ -312,7 +316,7 @@ export class TranscriptParser {
     }
     if (!this.validRecords) this.warn("No readable transcript records.");
     if (![...buckets.values()].some((bucket) => bucket.metrics.inputTokens !== null)) this.warn("No token usage records found; token and cost measurements are unknown.");
-    this.result.buckets = [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model) || (a.effort ?? "").localeCompare(b.effort ?? ""));
+    this.result.buckets = [...buckets.values()].sort(compareBuckets);
     this.result.warnings = [...this.warnings];
     return this.result;
   }
