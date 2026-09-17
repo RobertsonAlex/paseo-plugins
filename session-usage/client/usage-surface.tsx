@@ -79,6 +79,8 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   const activeDirection = grouped ? groupDirection : direction;
   const groupingLabel = TABLE_GROUPINGS.find((option) => option.id === grouping)!.label;
   const dateError = dateRange(filters).error;
+  const updating = query.isPending || Boolean(query.data?.scanning);
+  const progress = query.data?.scanning ? `Reading transcripts: ${query.data.completed} / ${query.data.total || "…"}. ${sessions.length ? "Showing the previous completed scan." : "The first scan may take a moment."}` : "Connecting to usage index…";
   const { fontScale } = useWindowDimensions();
   const firstColumnWidth = layout.compact ? 160 : 260;
   // Both panes share vertical scrolling and identical row heights, including scaled text.
@@ -115,7 +117,14 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   return <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 12 : 24, gap: 18 }}>
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
       <View style={{ gap: 4, flexShrink: 1, maxWidth: "100%" }}>
-        <Text accessibilityRole="header" style={{ ...text, fontSize: layout.compact ? 22 : 26, fontWeight: "700" }}>Session usage</Text>
+        {/* Progress sits beside the title, so updates never shift the page. */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Text accessibilityRole="header" style={{ ...text, fontSize: layout.compact ? 22 : 26, fontWeight: "700" }}>Session usage</Text>
+          {updating ? <View testID="usage-updating" accessible accessibilityRole="progressbar" accessibilityLabel={progress} style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+            <ActivityIndicator size="small" color={theme.colors.accent} />
+            {query.data?.scanning && query.data.total ? <Text numberOfLines={1} style={muted}>{query.data.completed} / {query.data.total}</Text> : null}
+          </View> : null}
+        </View>
         <Text style={muted}>{providers.length ? providers.map((provider) => provider.label).join(", ") : "Agent sessions"} · {host.label} · Active and archived sessions</Text>
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -125,7 +134,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
       </View>
     </View>
     <AllowanceCards allowances={allowances.data} sessions={sessions} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
-    {query.isPending || query.data?.scanning ? <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><ActivityIndicator color={theme.colors.accent} /><Text style={muted}>{query.data?.scanning ? `Reading transcripts: ${query.data.completed} / ${query.data.total || "…"}. ${sessions.length ? "Showing the previous completed scan." : "The first scan may take a moment."}` : "Connecting to usage index…"}</Text></View> : null}
+    {updating && !sessions.length ? <Text style={muted}>{progress}</Text> : null}
     {query.isError || error ? <Text accessibilityRole="alert" style={{ ...text, color: theme.colors.statusDanger }}>{error ?? "Could not load usage from this host. Check the connection and refresh."}</Text> : null}
     {query.data?.warnings.map((warning) => <Text key={warning} style={{ ...muted, color: theme.colors.statusWarning }}>{warning}</Text>)}
     <FilterBar sessions={sessions} filters={filters} onChange={changeFilters} theme={theme} compact={layout.compact} />

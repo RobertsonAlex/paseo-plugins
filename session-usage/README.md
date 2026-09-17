@@ -96,8 +96,8 @@ where the tokens went, and how long the allowance lasts at the current pace.
 - **Refresh** scans for new or changed files and asks Paseo for fresh allowances. The surface
   also refreshes every 30 seconds and polls scan progress every two seconds. The sessions are
   only transferred again when they have changed since the last response. A previous completed
-  snapshot stays visible during refresh; data from a different host is never used as a
-  placeholder.
+  snapshot stays visible during refresh, and a spinner with the scan progress appears beside the
+  title without moving the page; data from a different host is never used as a placeholder.
 
 ## Measurements
 
