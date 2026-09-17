@@ -33,7 +33,10 @@ Current plugins:
 - `session-usage`: reads active and archived Claude/Codex transcripts, OpenCode/Kilo/Devin CLI/Cursor
   session stores, and Paseo metadata for every provider in use, with a
   sortable statistics table, filtered provider charts, token/cache accounting, cost estimates,
-  session details, and CSV export. Reads local files; changes no provider or daemon state.
+  session details, and CSV export. Subscription allowance cards pair Paseo's
+  `providers.listUsage` limits with clickable hourly/daily token charts and a pace projection.
+  Reads local files; writes only its own SQLite index under `$PASEO_HOME/plugin-data`; changes no
+  provider or daemon state.
 - `skills-usage`: adds a "Skills" composer pill whose popover lists the skills available to the
   agent, groups the ones already loaded in this chat on top with a used badge and count, offers a
   search, marks each skill's location (user, project, project-local, plugin, built-in) with an

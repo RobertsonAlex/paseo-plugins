@@ -4,7 +4,8 @@ Adds **Session usage** to Paseo's sidebar and Command Center. It reads Claude Co
 transcripts and the OpenCode, Kilo, Devin CLI, and Cursor session stores on the selected daemon, including
 archived sessions, subagents, and sessions started outside Paseo, then joins them with Paseo's
 project, workspace, and agent records. Agents of other providers are listed from Paseo's records
-with unknown usage.
+with unknown usage. Subscription allowance cards show how much of each provider's limits is used,
+where the tokens went, and how long the allowance lasts at the current pace.
 
 ![Session usage](./images/session-usage.png)
 
@@ -30,6 +31,39 @@ with unknown usage.
   `low` or `xhigh`). A session that changed effort lists each level; sorting uses its highest
   recorded level. Details and CSV include effort too. An em dash means effort was not recorded;
   provider defaults and current agent settings are not inferred for historical usage.
+- **Subscription allowances**, above Compare providers, has a card for each provider that
+  Paseo reports allowance limits for and that has sessions on this host. Each limit (for example
+  Claude's session, weekly, and weekly Fable limits) shows:
+  - a 100 px token chart for the current window. Windows up to a day use UTC hours; longer ones
+    use UTC days. Input tokens (including cache reads and writes) rise above the baseline and
+    output tokens hang below it. Each half has its own scale, labelled with its maximum.
+  - Paseo's used percentage and reset time, with a mark for the share of the window that has
+    already passed. Usage to the right of the mark is ahead of time.
+  - how long the allowance lasts at the current pace. The projection extrapolates the used
+    percentage over the elapsed time: an allowance used at half the pace lasts until the reset,
+    and one used faster shows when it runs out. Token counts are not used for this, because how
+    they map to a provider's allowance is unknown.
+
+  Hover or focus a bar for its input, cache and output tokens, base API estimate, and session
+  count. Choosing a bar focuses the whole report on that hour or day and on the provider; for a
+  model-scoped limit such as Fable, it also selects that limit's models. Choosing it again clears
+  the period. The cards always cover every session on the host and ignore the report filters.
+  Future slots are dimmed. A slot's total can include activity from shortly before the window
+  opened.
+
+  Paseo reports reset times but not window lengths, so the length is inferred:
+  - from the limit's name: session and five-hour windows are 5 h, daily 24 h, weekly 7 days, and
+    monthly one calendar month;
+  - otherwise, or when the time left exceeds the named length, from the shortest of 5 h, 24 h,
+    7 days, or one month that covers the time left. A Codex "Session" limit that resets in two
+    days is treated as weekly.
+
+  Limits that local records cannot be attributed to (surface-scoped limits, code review, Cursor's
+  model pools) and providers without local token records show a note instead of a chart.
+  Allowances refresh every five minutes and with **Refresh**. Provider balances are not shown.
+
+![Subscription allowances](./images/allowances.png)
+
 - **Compare providers** shows a bar for each provider in the filtered sessions, all on the same
   zero-based scale. A provider keeps its color while filters change. Choose a
   metric, total or average per known session, and group by provider, day, week, month, project,
@@ -39,7 +73,7 @@ with unknown usage.
   desktop or one month on compact/narrow screens. Previous/next controls browse older periods.
   It uses the bars' selected metric and total/average setting, combining the selected providers.
   Each day's color is normalized against the highest value across the visible calendar.
-  Selecting a day filters the cards, bars, table, details and CSV to that UTC day; selecting the
+  Selecting a day filters the summary cards, bars, table, details and CSV to that UTC day; selecting the
   same day again clears the date filter. The calendar
   ignores date filters so its days and color scale stay visible; all other filters still apply.
   **Clear date filter** restores the report's full date range. Empty days remain selectable;
@@ -48,6 +82,8 @@ with unknown usage.
   uncolored because those measurements cannot be attributed to individual days.
 - Filters include provider, project, workspace, label, model, active/archived state, source
   (Paseo linked/outside Paseo), main/subagent, data availability, and UTC calendar dates.
+  Custom dates also accept UTC hours as `YYYY-MM-DD HH:00`; allowance charts set these. The model
+  filter opens automatically when a chart sets it.
   Search matches session metadata, titles, directories, branches, labels, models, and effort.
   The provider filter lists only providers with sessions on this host, using the labels from
   Paseo's provider settings.
@@ -56,9 +92,11 @@ with unknown usage.
   as raw numbers (durations in milliseconds, ratios from 0 to 1, USD, bytes). On native clients
   it uses the platform share sheet. Spreadsheet formulas in text fields are neutralized.
   When the table is grouped, the export contains grouped totals and per-metric known-session counts.
-- **Refresh** scans for new or changed files. The surface also refreshes every 30 seconds and
-  polls scan progress every two seconds. A previous completed snapshot stays visible during
-  refresh; data from a different host is never used as a placeholder.
+- **Refresh** scans for new or changed files and asks Paseo for fresh allowances. The surface
+  also refreshes every 30 seconds and polls scan progress every two seconds. The sessions are
+  only transferred again when they have changed since the last response. A previous completed
+  snapshot stays visible during refresh; data from a different host is never used as a
+  placeholder.
 
 ## Measurements
 
@@ -78,9 +116,10 @@ added to output. Cache writes include the 1-hour subset. Reasoning is a subset
 of output and is never added a second time to total tokens. Character counts use Unicode code
 points, exclude images, and are not estimates of token counts.
 
-**Dates filter activity, not session creation.** A session spanning several days contributes only
-the daily/model/effort buckets selected. Date presets include today and the preceding 6, 29, or 89 UTC
-calendar days. Unknown-date buckets appear only without date bounds. Recorded turn duration is
+**Dates filter activity, not session creation.** Activity is recorded per UTC hour, model, and
+effort. A session spanning several days contributes only the buckets selected. Date presets include today and the preceding 6, 29, or 89 UTC
+calendar days. Unknown-date buckets appear only without date bounds; activity without a recorded
+hour is included by an hour filter only when the filter covers its whole day. Recorded turn duration is
 attributed to the completion day. Session span and transcript size always cover the entire file;
 those two metrics can be charted only by provider or project. Model filters omit activity that
 cannot be attributed to the selected model, such as initial prompts before a model is recorded.
@@ -107,7 +146,9 @@ This is a **standard, short-context API equivalent**, not a bill or subscription
 It excludes priority/fast processing, long-context and regional premiums, tool fees, negotiated
 discounts, tax, and plan charges. It does not infer what you paid for Claude Pro/Max or ChatGPT.
 **Reported cost** is separate. OpenCode and Kilo record a USD cost per message; Claude transcripts
-rarely contain the SDK's `result.total_cost_usd` events, and Codex, Devin CLI, and Cursor record none. No pricing or provider account API is contacted at runtime.
+rarely contain the SDK's `result.total_cost_usd` events, and Codex, Devin CLI, and Cursor record none. The plugin contacts
+no pricing or provider account API. Subscription allowances come from Paseo, whose daemon queries
+the provider accounts.
 
 ## Data sources and accounting
 
@@ -119,8 +160,11 @@ rarely contain the SDK's `result.total_cost_usd` events, and Codex, Devin CLI, a
 | Devin CLI | `$XDG_DATA_HOME/devin/cli/sessions.db`, default `~/.local/share`; only the `sessions` and `message_nodes` tables |
 | Cursor | `$CURSOR_CONFIG_DIR/{acp-sessions/*,chats/*/*}/store.db`; without it, both `$XDG_CONFIG_HOME/cursor` (default `~/.config/cursor`) and `~/.cursor`; only the `meta` and `blobs` tables |
 | Paseo | `$PASEO_HOME/projects/{projects,workspaces}.json`, `$PASEO_HOME/agents/*/*.json`, and provider labels from `$PASEO_HOME/config.json`, default `~/.paseo` |
+| Allowances | Paseo's provider usage report (`paseo.providers.listUsage`), which the daemon caches for five minutes; only window names, percentages, reset times, and plan labels are kept |
+| Index | Written by this plugin: `$PASEO_HOME/plugin-data/session-usage/index.sqlite`, or `$PASEO_SESSION_USAGE_DB` |
 
-- No transcript, registry, configuration, or provider state is changed. Only metadata, numeric
+- No transcript, registry, configuration, or provider state is changed. The only file written is
+  the plugin's own index. Only metadata, numeric
   statistics, tool names and coverage notices are sent to the client. Message text, tool arguments,
   tool results, and provider credentials never leave the parser. Session titles are metadata.
 - SQLite stores are opened read-only and closed after each read. Account and credential tables are
@@ -176,10 +220,18 @@ rarely contain the SDK's `result.total_cost_usd` events, and Codex, Devin CLI, a
 - Recorded user messages may include injected instructions, automated prompts and compaction
   context. Copied conversation context without stable identities may affect message/character
   counts. These are transcript statistics, not a count of human keystrokes.
-- Four file streams run at once. Parsed results are cached by path, size and modification time
-  in memory; only changed files are reparsed. Each JSONL line is capped at 16 MiB. Oversized,
-  malformed, and unfinished lines are skipped with a partial-data notice. Scan errors retain the
-  previous snapshot. Plugin cleanup aborts active streams and clears the cache.
+- Four file streams run at once. Each JSONL line is capped at 16 MiB. Oversized, malformed, and
+  unfinished lines are skipped with a partial-data notice. Scan errors retain the previous
+  snapshot. Plugin cleanup aborts active streams and clears the cache.
+- Parse results are kept in a SQLite index, so after a daemon restart or plugin reload only new or
+  changed sources are read. The scan starts when the plugin loads, and a warm index makes the
+  first visit near-instant.
+  - Transcripts are keyed by path, size, and modification time; stores by their database and WAL
+    files. A changed file is reparsed whole, and deleted sources are dropped.
+  - The index holds the same data the surface receives (session metadata, per-hour counters, tool
+    names, and notices), never message text or tool payloads.
+  - A version change or a corrupt file rebuilds the index from the sources.
+  - Without `node:sqlite`, the cache stays in memory only.
 
 ## Limitations
 
@@ -187,7 +239,9 @@ rarely contain the SDK's `result.total_cost_usd` events, and Codex, Devin CLI, a
   messages, tool calls, and models but no token usage. Other providers appear only through Paseo's
   agent records, with unknown usage.
 - Cost figures are a standard short-context API equivalent from a fixed price table, not a bill
-  or subscription meter. No pricing or provider account API is contacted at runtime.
+  or subscription meter. The plugin contacts no pricing or provider account API.
+- Allowance percentages and reset times are whatever Paseo reports; window lengths are inferred,
+  and the pace projection assumes usage continues at the average rate so far.
 - Message text, tool arguments, tool results, and credentials never leave the daemon parser.
 - An em dash means a measurement is absent; averages divide by known sessions only.
 
@@ -216,7 +270,7 @@ npm test --workspace=session-usage
 ```
 
 The plugin registers a sidebar surface and a global Command Center action; both registrations
-and the server index are removed on plugin cleanup. The UI uses React Native primitives and
+are removed on plugin cleanup, and the server index is closed. The UI uses React Native primitives and
 theme colors. Filters use anchored popovers on desktop and Paseo sheets on compact clients; the
 statistics table remains horizontally scrollable.
 
@@ -225,4 +279,6 @@ duplicate events, compaction counters, child metadata,
 malformed/oversized records, active/archive copies, missing files, metadata joins, changed-file
 refresh, credential/content exclusion, date/model filters, weighted aggregation, chart totals,
 effort changes and missing levels, calendar date selection and normalization, leap-year/month
-boundaries, calendar deselection, table group accounting, overlapping labels, sorting, and CSV escaping.
+boundaries, calendar deselection, table group accounting, overlapping labels, sorting, CSV escaping,
+hourly buckets and hour filters, index persistence across restarts, version rebuilds, snapshot
+revisions, allowance window lengths and scopes, token series, pace projection, and chart filters.
