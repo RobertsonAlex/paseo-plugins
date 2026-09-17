@@ -33,7 +33,8 @@ where the tokens went, and how long the allowance lasts at the current pace.
   recorded level. Details and CSV include effort too. An em dash means effort was not recorded;
   provider defaults and current agent settings are not inferred for historical usage.
 - **Subscription allowances**, at the top of the page, has a card for each provider that Paseo
-  reports allowance limits for and that has sessions on this host. Each limit (for example Claude's
+  reports allowance limits for and that has sessions on this host. The cards stay on one line and
+  scroll horizontally when they do not fit. Each limit (for example Claude's
   session, weekly, and weekly Fable limits) is a narrow column with:
   - a 50 px token chart for the current window, by UTC hour for windows up to a day and by UTC
     day otherwise. Input tokens (including cache reads and writes) rise above the baseline in
@@ -273,7 +274,7 @@ npm test --workspace=session-usage
 The plugin registers a sidebar surface and a global Command Center action; both registrations
 are removed on plugin cleanup, and the server index is closed. The UI uses React Native primitives and
 theme colors. Filters use anchored popovers on desktop and Paseo sheets on compact clients; the
-statistics table remains horizontally scrollable.
+statistics table and the allowance cards remain horizontally scrollable.
 
 Regression tests cover provider accounting, SQLite store accounting, custom provider IDs and labels,
 duplicate events, compaction counters, child metadata,

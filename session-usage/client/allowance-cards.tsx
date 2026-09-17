@@ -1,6 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { allowancePace, allowanceProviders, allowanceSeries, formatDuration, isSlotSelected, paceLines, toggleAllowanceSlot, usedPercent, windowScope, windowSpan, type AllowanceSeries, type AllowanceSlot, type AllowanceWindow, type Allowances, type ProviderAllowance, type WindowSpan } from "../shared/allowance";
 import { formatMetric, type Filters } from "../shared/model";
 import type { Session } from "../shared/schema";
@@ -36,21 +36,22 @@ export function AllowanceCards({ allowances, sessions, filters, onFiltersChange,
       <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 16, fontWeight: "600" }}>Subscription allowances</Text>
       <Text style={muted}>Reported by Paseo{allowances?.fetchedAt ? ` ${formatDuration(now - Date.parse(allowances.fetchedAt))} ago` : ""} · all sessions on this host, regardless of filters</Text>
     </View>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+    {/* One line of cards; narrow screens scroll sideways instead of wrapping. */}
+    <ScrollView horizontal testID="allowance-cards-scroll" contentContainerStyle={{ gap: 10 }}>
       {providers.map((provider) => <ProviderCard key={provider.providerId} provider={provider} sessions={sessions} filters={filters} onFiltersChange={onFiltersChange} theme={theme} compact={compact} now={now} />)}
-    </View>
+    </ScrollView>
   </View>;
 }
 
 function ProviderCard({ provider, sessions, filters, onFiltersChange, theme, compact, now }: Omit<Props, "allowances"> & { provider: ProviderAllowance; now: number }) {
   const padding = compact ? 12 : 14;
   const count = provider.windows.length;
-  return <View testID={`allowance-card-${provider.providerId}`} style={{ width: compact ? "100%" : count * SECTION_WIDTH + (count - 1) * SECTION_GAP + 2 * padding + 2, maxWidth: "100%", borderWidth: 1, borderColor: theme.colors.border, borderRadius: 12, padding, gap: 10, backgroundColor: theme.colors.surface1 }}>
+  return <View testID={`allowance-card-${provider.providerId}`} style={{ width: count * SECTION_WIDTH + (count - 1) * SECTION_GAP + 2 * padding + 2, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 12, padding, gap: 10, backgroundColor: theme.colors.surface1 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
       <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 15, fontWeight: "600", flexShrink: 1 }}>{provider.displayName}</Text>
       {provider.planLabel ? <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: theme.colors.surface2 }}>{provider.planLabel}</Text> : null}
     </View>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: SECTION_GAP, rowGap: 14 }}>
+    <View style={{ flexDirection: "row", gap: SECTION_GAP }}>
       {provider.windows.map((window) => <WindowSection key={window.id} provider={provider} window={window} sessions={sessions} filters={filters} onFiltersChange={onFiltersChange} theme={theme} now={now} />)}
     </View>
   </View>;
@@ -75,7 +76,7 @@ function WindowSection({ provider, window, sessions, filters, onFiltersChange, t
     : !series?.hasTokens ? "No local token data"
     : scope.kind === "model" && !series.models.length ? `No ${scope.name} usage`
     : null;
-  return <View testID={`allowance-window-${provider.providerId}-${window.id}`} style={{ width: SECTION_WIDTH, maxWidth: "100%", gap: 6 }}>
+  return <View testID={`allowance-window-${provider.providerId}-${window.id}`} style={{ width: SECTION_WIDTH, gap: 6 }}>
     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: 6 }}>
       <Text numberOfLines={1} style={{ ...text, fontWeight: "600", flexShrink: 1 }}>{window.label}</Text>
       {span ? <Text style={{ ...muted, fontSize: 11 }}>{span.hourly ? "by hour" : "by day"}</Text> : null}
