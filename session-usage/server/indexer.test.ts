@@ -264,3 +264,33 @@ test("an index from another version is rebuilt", async () => {
     reopened.close();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("snapshots carry a content revision and omit sessions the caller already has", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-usage-revision-"));
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data"), cursor: [join(root, "cursor")] };
+  const claudePath = join(roots.claude, "projects", "-worktree", "c1.jsonl");
+  const record = (id: string) => JSON.stringify({ type: "assistant", uuid: id, timestamp: "2026-09-01T12:00:00Z", sessionId: "c1", message: { id, model: "claude-fable-5", content: [], usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n";
+  const scan = async (index: UsageIndex) => { index.snapshot(true); return index.settled(); };
+  const first = new UsageIndex(roots, join(root, "usage.sqlite"));
+  const second = new UsageIndex(roots, join(root, "usage.sqlite"));
+  try {
+    assert.equal(first.view().revision, "");
+    await first.firstScan(10);
+    first.snapshot();
+    await first.firstScan(5_000);
+    await save(claudePath, record("r1"));
+    const initial = await scan(first);
+    assert.equal(initial.sessions.length, 1);
+    const unchanged = first.view(initial.revision);
+    assert.equal(unchanged.unchanged, true);
+    assert.deepEqual(unchanged.sessions, []);
+    assert.equal((await scan(first)).sessions, initial.sessions);
+    assert.equal(first.view("other").sessions.length, 1);
+    assert.equal((await scan(second)).revision, initial.revision);
+
+    await appendFile(claudePath, record("r2"));
+    const changed = await scan(first);
+    assert.notEqual(changed.revision, initial.revision);
+    assert.equal(first.view(initial.revision).unchanged, undefined);
+  } finally { first.dispose(); second.dispose(); await rm(root, { recursive: true, force: true }); }
+});

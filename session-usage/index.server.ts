@@ -5,6 +5,12 @@ import { listUsage } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
   const index = new UsageIndex(defaultRoots(), defaultIndexPath());
-  server.handle(listUsage, ({ refresh }) => index.snapshot(refresh));
+  // Start from the persistent index right away, so the first visit finds a fresh snapshot.
+  index.snapshot();
+  server.handle(listUsage, async ({ refresh, revision }) => {
+    index.snapshot(refresh);
+    await index.firstScan(1_500);
+    return index.view(revision);
+  });
   return () => index.dispose();
 }

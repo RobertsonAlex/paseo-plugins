@@ -80,5 +80,7 @@ export const SnapshotSchema = z.object({
   total: z.number().int().nonnegative(),
   generatedAt: z.string().nullable(),
   warnings: z.array(z.string()),
+  revision: z.string(), // Changes whenever the sessions change; empty before the first completed scan.
+  unchanged: z.boolean().optional(), // Sessions are omitted because the caller already has this revision.
 });
 export type Snapshot = z.infer<typeof SnapshotSchema>;

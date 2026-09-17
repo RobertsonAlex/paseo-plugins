@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
@@ -191,7 +192,7 @@ export class UsageIndex {
   private storeCache = new Map<string, IndexedStore>();
   private store: UsageStore | null = null;
   private loaded = false;
-  private state: Snapshot = { sessions: [], scanning: false, completed: 0, total: 0, generatedAt: null, warnings: [] };
+  private state: Snapshot = { sessions: [], scanning: false, completed: 0, total: 0, generatedAt: null, warnings: [], revision: "" };
   private controller = new AbortController();
   private running: Promise<void> | null = null;
   private lastScan = 0;
@@ -207,6 +208,17 @@ export class UsageIndex {
     return this.state;
   }
   async settled(): Promise<Snapshot> { await this.running; return this.state; }
+  /** Waits up to `timeoutMs` for the first scan, which is quick when the persistent index is warm. */
+  async firstScan(timeoutMs: number): Promise<void> {
+    if (this.state.generatedAt || !this.running) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.running, new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+    clearTimeout(timer);
+  }
+  /** The current state, without sessions when the caller already has this revision. */
+  view(revision?: string): Snapshot {
+    return revision && revision === this.state.revision ? { ...this.state, sessions: [], unchanged: true } : this.state;
+  }
   dispose(): void { this.controller.abort(); this.store?.close(); this.store = null; this.cache.clear(); this.storeCache.clear(); this.state.sessions = []; }
 
   private load(): void {
@@ -268,7 +280,9 @@ export class UsageIndex {
     }
     for (const path of this.cache.keys()) if (!livePaths.has(path)) { this.cache.delete(path); changes.removedFiles.push(path); }
     this.persist(changes);
-    this.state = { sessions: sessions.sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? "")), scanning: false, completed: sources.length, total: sources.length, generatedAt: new Date().toISOString(), warnings: [...warnings] };
+    sessions.sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? "") || a.id.localeCompare(b.id));
+    const revision = createHash("sha256").update(JSON.stringify(sessions)).digest("base64url").slice(0, 22);
+    this.state = { sessions: revision === this.state.revision ? this.state.sessions : sessions, scanning: false, completed: sources.length, total: sources.length, generatedAt: new Date().toISOString(), warnings: [...warnings], revision };
   }
 
   private persist(changes: IndexChanges): void {

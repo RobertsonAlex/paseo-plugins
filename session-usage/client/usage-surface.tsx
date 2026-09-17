@@ -1,12 +1,13 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Modal } from "@getpaseo/plugin/client/react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Share, Text, View, useWindowDimensions } from "react-native";
 import { listUsage } from "../shared/contracts";
 import { aggregate, DEFAULT_COLUMNS, DISPLAY_METRICS, EMPTY_FILTERS, dateRange, filterSessions, formatMetric, metricValue, METRICS, providersInUse, recordedEfforts, sortRows, toCsv, type DisplayMetric, type Filters, type SessionRow, type SortKey } from "../shared/model";
 import { PRICING_DATE } from "../shared/pricing";
+import type { Snapshot } from "../shared/schema";
 import { groupSessionRows, sortTableGroups, tableGroupsToCsv, TABLE_GROUPINGS, type GroupSortKey, type TableGrouping } from "../shared/table";
 import { Charts } from "./charts";
 import { GroupDetails } from "./group-details";
@@ -37,7 +38,19 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   const [error, setError] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
   const list = useRpc(listUsage);
-  const query = useQuery({ queryKey: ["session-usage", host.id], queryFn: () => list({ refresh: false }), refetchInterval: (q) => q.state.data?.scanning ? 2000 : 30_000 });
+  const queryClient = useQueryClient();
+  const queryKey = ["session-usage", host.id];
+  const query = useQuery({
+    queryKey,
+    // The host omits sessions when they match the revision already shown.
+    queryFn: async () => {
+      const previous = queryClient.getQueryData<Snapshot>(queryKey);
+      const next = await list({ refresh: false, revision: previous?.revision || undefined });
+      if (!next.unchanged) return next;
+      return previous ? { ...next, sessions: previous.sessions, unchanged: false } : list({ refresh: false });
+    },
+    refetchInterval: (q) => q.state.data?.scanning ? 2000 : 30_000,
+  });
   const sessions = query.data?.sessions ?? [];
   const providers = useMemo(() => providersInUse(sessions), [sessions]);
   const today = new Date().toISOString().slice(0, 10);
@@ -102,7 +115,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Pressable accessibilityRole="button" onPress={() => setHelp(true)} style={buttonStyle}><Text style={text}>Metric guide</Text></Pressable>
-        <Pressable accessibilityRole="button" disabled={query.data?.scanning || query.isFetching} accessibilityState={{ disabled: query.data?.scanning || query.isFetching }} onPress={async () => { setError(null); try { await list({ refresh: true }); await query.refetch(); } catch { setError("Could not refresh session usage. Try again."); } }} style={[buttonStyle, { opacity: query.data?.scanning ? 0.6 : 1 }]}><Text style={text}>Refresh</Text></Pressable>
+        <Pressable accessibilityRole="button" disabled={query.data?.scanning || query.isFetching} accessibilityState={{ disabled: query.data?.scanning || query.isFetching }} onPress={async () => { setError(null); try { await list({ refresh: true, revision: query.data?.revision || undefined }); await query.refetch(); } catch { setError("Could not refresh session usage. Try again."); } }} style={[buttonStyle, { opacity: query.data?.scanning ? 0.6 : 1 }]}><Text style={text}>Refresh</Text></Pressable>
         <Pressable accessibilityRole="button" disabled={!tableCount} accessibilityState={{ disabled: !tableCount }} onPress={async () => { try { const csv = grouped ? tableGroupsToCsv(sortedGroups, grouping) : toCsv(sorted); if (!downloadCsv(csv)) await Share.share({ title: "Session usage", message: csv }); } catch { setError("Could not export session usage."); } }} style={buttonStyle}><Text style={text}>Export CSV</Text></Pressable>
       </View>
     </View>
