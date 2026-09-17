@@ -31,25 +31,23 @@ where the tokens went, and how long the allowance lasts at the current pace.
   `low` or `xhigh`). A session that changed effort lists each level; sorting uses its highest
   recorded level. Details and CSV include effort too. An em dash means effort was not recorded;
   provider defaults and current agent settings are not inferred for historical usage.
-- **Subscription allowances**, above Compare providers, has a card for each provider that
-  Paseo reports allowance limits for and that has sessions on this host. Each limit (for example
-  Claude's session, weekly, and weekly Fable limits) shows:
-  - a 100 px token chart for the current window. Windows up to a day use UTC hours; longer ones
-    use UTC days. Input tokens (including cache reads and writes) rise above the baseline and
-    output tokens hang below it. Each half has its own scale, labelled with its maximum.
+- **Subscription allowances**, at the top of the page, has a card for each provider that Paseo
+  reports allowance limits for and that has sessions on this host. Each limit (for example Claude's
+  session, weekly, and weekly Fable limits) is a narrow column with:
+  - a 50 px token chart for the current window, by UTC hour for windows up to a day and by UTC
+    day otherwise. Input tokens (including cache reads and writes) rise above the baseline in
+    blue and output tokens hang below it in orange. Each half is scaled to its own maximum.
+    Future slots are dimmed. A slot's total can include activity from shortly before the window
+    opened.
   - Paseo's used percentage and reset time, with a mark for the share of the window that has
     already passed. Usage to the right of the mark is ahead of time.
-  - how long the allowance lasts at the current pace. The projection extrapolates the used
-    percentage over the elapsed time: an allowance used at half the pace lasts until the reset,
-    and one used faster shows when it runs out. Token counts are not used for this, because how
-    they map to a provider's allowance is unknown.
+  - a short pace projection, such as `Lasts 4h 12m · ~19% at reset` or
+    `Runs out in 3d 6h, 15h before reset`. It extrapolates the used percentage over the elapsed
+    time; token counts are not used, because how they map to a provider's allowance is unknown.
 
-  Hover or focus a bar for its input, cache and output tokens, base API estimate, and session
-  count. Choosing a bar focuses the whole report on that hour or day and on the provider; for a
+  Choosing a bar focuses the whole report on that hour or day and on the provider; for a
   model-scoped limit such as Fable, it also selects that limit's models. Choosing it again clears
   the period. The cards always cover every session on the host and ignore the report filters.
-  Future slots are dimmed. A slot's total can include activity from shortly before the window
-  opened.
 
   Paseo reports reset times but not window lengths, so the length is inferred:
   - from the limit's name: session and five-hour windows are 5 h, daily 24 h, weekly 7 days, and
@@ -59,7 +57,7 @@ where the tokens went, and how long the allowance lasts at the current pace.
     days is treated as weekly.
 
   Limits that local records cannot be attributed to (surface-scoped limits, code review, Cursor's
-  model pools) and providers without local token records show a note instead of a chart.
+  model pools) and providers without local token records show a short note instead of a chart.
   Allowances refresh every five minutes and with **Refresh**. Provider balances are not shown.
 
 ![Subscription allowances](./images/allowances.png)

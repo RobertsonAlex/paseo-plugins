@@ -124,6 +124,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
         <Pressable accessibilityRole="button" disabled={!tableCount} accessibilityState={{ disabled: !tableCount }} onPress={async () => { try { const csv = grouped ? tableGroupsToCsv(sortedGroups, grouping) : toCsv(sorted); if (!downloadCsv(csv)) await Share.share({ title: "Session usage", message: csv }); } catch { setError("Could not export session usage."); } }} style={buttonStyle}><Text style={text}>Export CSV</Text></Pressable>
       </View>
     </View>
+    <AllowanceCards allowances={allowances.data} sessions={sessions} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
     {query.isPending || query.data?.scanning ? <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><ActivityIndicator color={theme.colors.accent} /><Text style={muted}>{query.data?.scanning ? `Reading transcripts: ${query.data.completed} / ${query.data.total || "…"}. ${sessions.length ? "Showing the previous completed scan." : "The first scan may take a moment."}` : "Connecting to usage index…"}</Text></View> : null}
     {query.isError || error ? <Text accessibilityRole="alert" style={{ ...text, color: theme.colors.statusDanger }}>{error ?? "Could not load usage from this host. Check the connection and refresh."}</Text> : null}
     {query.data?.warnings.map((warning) => <Text key={warning} style={{ ...muted, color: theme.colors.statusWarning }}>{warning}</Text>)}
@@ -141,7 +142,6 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
       })}
     </View>
     <Text style={muted}>Date filters count activity recorded on those UTC days or hours. Cache reads and writes are included in input; reasoning is included in output. Cost estimates use base API rates ({PRICING_DATE}) and do not represent subscription charges.</Text>
-    <AllowanceCards allowances={allowances.data} sessions={sessions} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
     <Charts rows={rows} sessions={sessions} providers={providers} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
     <View testID="usage-table" style={{ gap: 10 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>

@@ -181,24 +181,27 @@ export function allowancePace(window: AllowanceWindow, span: WindowSpan | null, 
   return inMs >= resetInMs ? { kind: "lasts", resetInMs, projectedPct: used + rate * resetInMs } : { kind: "runsOut", inMs, beforeResetMs: resetInMs - inMs };
 }
 
+/** At most two units; minutes only below ten hours. */
 export function formatDuration(ms: number): string {
   const minutes = Math.max(0, Math.round(ms / MINUTE));
   if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+  if (minutes < 600) return minutes % 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes / 60}h`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
   return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
 }
 
+/** Short enough for a narrow card; the reset time is shown beside the usage bar. */
 export function paceText(pace: Pace): string | null {
   switch (pace.kind) {
     case "unknown": return null;
-    case "resetting": return "Resetting now";
-    case "exhausted": return `Used up · resets in ${formatDuration(pace.resetInMs)}`;
-    case "idle": return `Nothing used yet · resets in ${formatDuration(pace.resetInMs)}`;
-    case "early": return `Too early to project · resets in ${formatDuration(pace.resetInMs)}`;
-    case "lasts": return `At this pace it lasts until the reset in ${formatDuration(pace.resetInMs)} · ~${Math.round(pace.projectedPct)}% by then`;
-    case "runsOut": return `At this pace it runs out in ${formatDuration(pace.inMs)}, ${formatDuration(pace.beforeResetMs)} before the reset`;
+    case "resetting": return "Resetting";
+    case "exhausted": return "Used up";
+    case "idle": return "Unused";
+    case "early": return "Too early to project";
+    case "lasts": return `Lasts ${formatDuration(pace.resetInMs)} · ~${Math.round(pace.projectedPct)}% at reset`;
+    case "runsOut": return `Runs out in ${formatDuration(pace.inMs)}, ${formatDuration(pace.beforeResetMs)} before reset`;
   }
 }
 
