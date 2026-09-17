@@ -61,6 +61,30 @@ test("date validation rejects impossible dates and reversed ranges", () => {
   assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-02-30" }).error);
   assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-02", to: "2026-09-01" }).error);
   assert.equal(dateRange({ ...EMPTY_FILTERS, period: "7d" }, Date.parse("2026-09-07T12:00:00Z")).from, "2026-09-01");
+  assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 24:00" }).error);
+  assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 13:30" }).error);
+  assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 14:00", to: "2026-09-01 13:00" }).error);
+  assert.equal(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 23:00", to: "2026-09-01" }).error, null);
+});
+test("hour bounds select hourly activity and only whole days of activity without an hour", () => {
+  const a = fixture("a");
+  a.buckets = [
+    { day: "2026-09-01", hour: 12, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 1 }, tools: {} },
+    { day: "2026-09-01", hour: 13, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 10 }, tools: {} },
+    { day: "2026-09-02", hour: 0, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 100 }, tools: {} },
+    { day: "2026-09-02", hour: null, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 1000 }, tools: {} },
+  ];
+  const tokens = (from: string, to: string) => filterSessions([a], { ...EMPTY_FILTERS, period: "custom", from, to })[0]?.metrics.inputTokens ?? null;
+  assert.equal(tokens("2026-09-01 13:00", "2026-09-01 13:00"), 10);
+  assert.equal(tokens("2026-09-01 13:00", "2026-09-02 00:00"), 110);
+  assert.equal(tokens("2026-09-01 13:00", ""), 1110);
+  assert.equal(tokens("2026-09-02", "2026-09-02"), 1100);
+  assert.equal(tokens("2026-09-01", "2026-09-01 12:00"), 1);
+  assert.equal(tokens("2026-09-01 14:00", "2026-09-01 23:00"), null);
+  const empty = { ...fixture("empty"), buckets: [], startedAt: "2026-09-01T13:20:00.000Z" };
+  assert.equal(filterSessions([empty], { ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 13:00", to: "2026-09-01 13:00" }).length, 1);
+  assert.equal(filterSessions([empty], { ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 14:00", to: "2026-09-01 14:00" }).length, 0);
+  assert.equal(toggleCalendarDay({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 13:00", to: "2026-09-01 13:00" }, "2026-09-01").from, "2026-09-01");
 });
 test("CSV uses raw numeric values, escapes quotes and neutralizes spreadsheet formulas", () => {
   const a = fixture("a"); a.title = '=HYPERLINK("danger")';

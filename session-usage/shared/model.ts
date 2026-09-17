@@ -70,12 +70,26 @@ export function recordedEfforts(buckets: Bucket[]): string[] {
     .sort((a, b) => effortRank(a) - effortRank(b) || a.localeCompare(b));
 }
 const DAY_MS = 86_400_000;
+const DATE_BOUND = /^(\d{4}-\d{2}-\d{2})(?: (\d{2}):00)?$/;
+export const isDayString = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+/** A custom bound is a UTC day or a UTC hour written `YYYY-MM-DD HH:00`. */
+export const hourBound = (day: string, hour: number) => `${day} ${String(hour).padStart(2, "0")}:00`;
+/** The UTC hour of an ISO timestamp, or null for a bare date. */
+export const hourOf = (iso: string) => { const match = /^\d{4}-\d{2}-\d{2}T(\d{2})/.exec(iso); return match ? Number(match[1]) : null; };
+/** Comparable `YYYY-MM-DD HH` key; a day bound covers the whole day. */
+function boundKey(bound: string, end: boolean): string {
+  const match = DATE_BOUND.exec(bound)!;
+  return `${match[1]} ${match[2] ?? (end ? "23" : "00")}`;
+}
 export function dateRange(filters: Filters, now = Date.now()): { from: string; to: string; error: string | null } {
   if (filters.period === "all") return { from: "", to: "", error: null };
   if (filters.period === "custom") {
-    const valid = (s: string) => !s || (/^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Date.parse(s)) && new Date(s).toISOString().slice(0, 10) === s);
-    if (!valid(filters.from) || !valid(filters.to)) return { from: "", to: "", error: "Use valid UTC dates in YYYY-MM-DD format." };
-    if (filters.from && filters.to && filters.from > filters.to) return { from: "", to: "", error: "Start date must be on or before end date." };
+    const valid = (s: string) => {
+      const match = DATE_BOUND.exec(s);
+      return !s || Boolean(match && Number.isFinite(Date.parse(match[1])) && new Date(match[1]).toISOString().slice(0, 10) === match[1] && Number(match[2] ?? 0) < 24);
+    };
+    if (!valid(filters.from) || !valid(filters.to)) return { from: "", to: "", error: "Use valid UTC dates as YYYY-MM-DD, or hours as YYYY-MM-DD HH:00." };
+    if (filters.from && filters.to && boundKey(filters.from, false) > boundKey(filters.to, true)) return { from: "", to: "", error: "Start date must be on or before end date." };
     return { from: filters.from, to: filters.to, error: null };
   }
   const days = filters.period === "today" ? 1 : Number.parseInt(filters.period, 10);
@@ -85,7 +99,15 @@ export function filterSessions(sessions: Session[], filters: Filters, now = Date
   const range = dateRange(filters, now);
   if (range.error) return [];
   const selected = (values: string[], value: string) => !values.length || values.includes(value);
-  const inRange = (day: string) => (!range.from && !range.to) || (day !== "unknown" && (!range.from || day >= range.from) && (!range.to || day <= range.to));
+  const from = range.from && boundKey(range.from, false), to = range.to && boundKey(range.to, true);
+  // Activity without an hour counts only when the range covers its whole day.
+  const inRange = (day: string, hour: number | null = null) => {
+    if (!from && !to) return true;
+    if (day === "unknown") return false;
+    const start = hour === null ? `${day} 00` : `${day} ${String(hour).padStart(2, "0")}`;
+    const end = hour === null ? `${day} 23` : start;
+    return (!from || start >= from) && (!to || end <= to);
+  };
   const query = filters.query.trim().toLocaleLowerCase();
   const result: SessionRow[] = [];
   for (const session of sessions) {
@@ -96,9 +118,9 @@ export function filterSessions(sessions: Session[], filters: Filters, now = Date
     if (filters.kind !== "all" && filters.kind !== session.kind) continue;
     if (filters.coverage !== "all" && filters.coverage !== session.coverage) continue;
     if (query && ![session.title, session.id, session.agentId, session.project, session.workspace, session.cwd, session.branch, ...session.labels, ...session.buckets.flatMap((b) => [b.model, b.effort])].join(" ").toLocaleLowerCase().includes(query)) continue;
-    const buckets = session.buckets.filter((b) => inRange(b.day) && selected(filters.models, b.model));
+    const buckets = session.buckets.filter((b) => inRange(b.day, b.hour ?? null) && selected(filters.models, b.model));
     if (session.buckets.length && !buckets.length) continue;
-    if (!session.buckets.length && (filters.models.length || !inRange(session.startedAt?.slice(0, 10) ?? "unknown"))) continue;
+    if (!session.buckets.length && (filters.models.length || !inRange(session.startedAt?.slice(0, 10) ?? "unknown", session.startedAt ? hourOf(session.startedAt) : null))) continue;
     result.push({ session, buckets, metrics: buckets.reduce((m, b) => addMetrics(m, b.metrics), emptyMetrics()) });
   }
   return result;

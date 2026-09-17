@@ -40,8 +40,8 @@ export function FilterBar({ sessions, filters, onChange, theme, compact }: { ses
       {single("coverage", "Data", [["all", "All"], ["available", "Available"], ["partial", "Partial"], ["missing", "Missing"]])}
     </View> : null}
     {filters.period === "custom" ? <View style={{ flexDirection: compact ? "column" : "row", gap: 8 }}>
-      <TextInput accessibilityLabel="From UTC date" placeholder="From YYYY-MM-DD" placeholderTextColor={theme.colors.foregroundMuted} value={filters.from} onChangeText={(from) => onChange({ ...filters, from })} style={[input, { flex: compact ? undefined : 1 }]} />
-      <TextInput accessibilityLabel="To UTC date" placeholder="To YYYY-MM-DD" placeholderTextColor={theme.colors.foregroundMuted} value={filters.to} onChangeText={(to) => onChange({ ...filters, to })} style={[input, { flex: compact ? undefined : 1 }]} />
+      <TextInput accessibilityLabel="From UTC date or hour" placeholder="From YYYY-MM-DD [HH:00]" placeholderTextColor={theme.colors.foregroundMuted} value={filters.from} onChangeText={(from) => onChange({ ...filters, from })} style={[input, { flex: compact ? undefined : 1 }]} />
+      <TextInput accessibilityLabel="To UTC date or hour" placeholder="To YYYY-MM-DD [HH:00]" placeholderTextColor={theme.colors.foregroundMuted} value={filters.to} onChangeText={(to) => onChange({ ...filters, to })} style={[input, { flex: compact ? undefined : 1 }]} />
     </View> : null}
   </View>;
 }
