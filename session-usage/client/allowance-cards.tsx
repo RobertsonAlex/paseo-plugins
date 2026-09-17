@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { allowancePace, allowanceProviders, allowanceSeries, formatDuration, isSlotSelected, paceText, toggleAllowanceSlot, usedPercent, windowScope, windowSpan, type AllowanceSeries, type AllowanceSlot, type AllowanceWindow, type Allowances, type ProviderAllowance, type WindowSpan } from "../shared/allowance";
+import { allowancePace, allowanceProviders, allowanceSeries, formatDuration, isSlotSelected, paceLines, toggleAllowanceSlot, usedPercent, windowScope, windowSpan, type AllowanceSeries, type AllowanceSlot, type AllowanceWindow, type Allowances, type ProviderAllowance, type WindowSpan } from "../shared/allowance";
 import { formatMetric, type Filters } from "../shared/model";
 import type { Session } from "../shared/schema";
 import { darkSurface, SERIES_COLORS } from "./charts";
@@ -95,7 +95,11 @@ function WindowSection({ provider, window, sessions, filters, onFiltersChange, t
         {elapsed !== null ? <View pointerEvents="none" style={{ position: "absolute", left: `${elapsed * 100}%`, width: 2, height: 10, marginLeft: -1, borderRadius: 1, backgroundColor: theme.colors.foreground }} /> : null}
       </View>
     </View>
-    {paceText(pace) ? <Text testID={`allowance-pace-${provider.providerId}-${window.id}`} style={{ ...muted, color: pace.kind === "runsOut" || pace.kind === "exhausted" ? theme.colors.statusDanger : theme.colors.foregroundMuted }}>{paceText(pace)}</Text> : null}
+    <View testID={`allowance-pace-${provider.providerId}-${window.id}`}>
+      {paceLines(pace).map((line, index) => <Text key={index} numberOfLines={1} style={{ ...muted, color: pace.kind === "exhausted" ? theme.colors.statusDanger : pace.kind === "runsOut" ? theme.colors.statusWarning : theme.colors.foregroundMuted }}>
+        {line.map((part, i) => part.strong ? <Text key={i} style={{ fontWeight: "700" }}>{part.text}</Text> : part.text)}
+      </Text>)}
+    </View>
   </View>;
 }
 

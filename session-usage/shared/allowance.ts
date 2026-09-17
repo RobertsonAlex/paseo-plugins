@@ -193,15 +193,22 @@ export function formatDuration(ms: number): string {
 }
 
 /** Short enough for a narrow card; the reset time is shown beside the usage bar. */
-export function paceText(pace: Pace): string | null {
+export type PaceLine = { text: string; strong?: boolean }[];
+export function paceLines(pace: Pace): PaceLine[] {
   switch (pace.kind) {
-    case "unknown": return null;
-    case "resetting": return "Resetting";
-    case "exhausted": return "Used up";
-    case "idle": return "Unused";
-    case "early": return "Too early to project";
-    case "lasts": return `Lasts ${formatDuration(pace.resetInMs)} · ~${Math.round(pace.projectedPct)}% at reset`;
-    case "runsOut": return `Runs out in ${formatDuration(pace.inMs)}, ${formatDuration(pace.beforeResetMs)} before reset`;
+    case "unknown": return [];
+    case "resetting": return [[{ text: "Resetting" }]];
+    case "exhausted": return [[{ text: "Used up" }]];
+    case "idle": return [[{ text: "Unused" }]];
+    case "early": return [[{ text: "Too early to project" }]];
+    case "lasts": return [
+      [{ text: "Lasts " }, { text: formatDuration(pace.resetInMs), strong: true }],
+      [{ text: `${Math.round(pace.projectedPct)}%`, strong: true }, { text: " at reset" }],
+    ];
+    case "runsOut": return [
+      [{ text: "Runs out in " }, { text: formatDuration(pace.inMs), strong: true }],
+      [{ text: formatDuration(pace.beforeResetMs), strong: true }, { text: " before reset" }],
+    ];
   }
 }
 

@@ -30,7 +30,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   const [columns, setColumns] = useState<DisplayMetric[]>(saved?.columns ?? DEFAULT_COLUMNS);
   const [sort, setSort] = useState<SortKey>(saved?.sort ?? "endedAt");
   const [direction, setDirection] = useState<"asc" | "desc">(saved?.direction ?? "desc");
-  const [grouping, setGrouping] = useState<TableGrouping>(saved?.grouping ?? "sessions");
+  const [grouping, setGrouping] = useState<TableGrouping>(saved?.grouping ?? "workspace");
   const [groupSort, setGroupSort] = useState<GroupSortKey>(saved?.groupSort ?? "totalTokens");
   const [groupDirection, setGroupDirection] = useState<"asc" | "desc">(saved?.groupDirection ?? "desc");
   const [page, setPage] = useState(0);

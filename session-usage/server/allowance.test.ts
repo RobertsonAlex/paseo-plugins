@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { allowancePace, allowanceProviders, allowanceSeries, formatDuration, isSlotSelected, modelInScope, paceText, toggleAllowanceSlot, windowScope, windowSpan, type AllowanceWindow } from "../shared/allowance";
+import { allowancePace, allowanceProviders, allowanceSeries, formatDuration, isSlotSelected, modelInScope, paceLines, toggleAllowanceSlot, windowScope, windowSpan, type AllowanceWindow } from "../shared/allowance";
 import { EMPTY_FILTERS, filterSessions } from "../shared/model";
 import { emptyMetrics, type Bucket } from "../shared/schema";
 import { readAllowances } from "./allowances";
@@ -90,9 +90,10 @@ test("pace extrapolates the share used over the elapsed part of the window", () 
   assert.deepEqual(pace(10, { start: NOW - 60_000, end: NOW + 5 * HOUR, hourly: true }), { kind: "early", resetInMs: 5 * HOUR });
   assert.deepEqual(pace(10, { start: NOW - 5 * HOUR, end: NOW, hourly: true }), { kind: "resetting" });
   assert.deepEqual(allowancePace({ id: "weekly", label: "Weekly", remainingPct: 52 }, { start: NOW - 3 * DAY, end: NOW + 4 * DAY, hourly: false }, NOW), { kind: "runsOut", inMs: 3.25 * DAY, beforeResetMs: 0.75 * DAY });
-  assert.equal(paceText(pace(80)), "Runs out in 38m, 1h 53m before reset");
-  assert.equal(paceText(pace(25)), "Lasts 2h 30m · ~50% at reset");
-  assert.deepEqual([paceText(pace(0)), paceText(pace(100)), paceText(pace(null))], ["Unused", "Used up", null]);
+  const lines = (p: ReturnType<typeof pace>) => paceLines(p).map((line) => line.map((part) => part.strong ? `*${part.text}*` : part.text).join(""));
+  assert.deepEqual(lines(pace(80)), ["Runs out in *38m*", "*1h 53m* before reset"]);
+  assert.deepEqual(lines(pace(25)), ["Lasts *2h 30m*", "*50%* at reset"]);
+  assert.deepEqual([lines(pace(0)), lines(pace(100)), lines(pace(null))], [["Unused"], ["Used up"], []]);
   assert.deepEqual([formatDuration(59_000), formatDuration(3 * HOUR), formatDuration(9 * HOUR + 59 * 60_000), formatDuration(14 * HOUR + 59 * 60_000), formatDuration(23.6 * HOUR), formatDuration(3.25 * DAY), formatDuration(2 * DAY)], ["1m", "3h", "9h 59m", "15h", "1d", "3d 6h", "2d"]);
 });
 

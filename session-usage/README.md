@@ -11,7 +11,8 @@ where the tokens went, and how long the allowance lasts at the current pace.
 
 ## Using the surface
 
-- The **sortable table** defaults to one row per provider session. Choose **Columns** to show any
+- The **sortable table** is grouped by workspace by default; choose **Sessions** under **Table
+  grouping** for one row per provider session. Choose **Columns** to show any
   measurement, press a heading to sort in either direction, and press a session name for all
   measurements, its tool-call breakdown, and a link to its agent or workspace. Missing values
   sort last in both directions. The session column stays fixed while the other columns scroll
@@ -41,9 +42,11 @@ where the tokens went, and how long the allowance lasts at the current pace.
     opened.
   - Paseo's used percentage and reset time, with a mark for the share of the window that has
     already passed. Usage to the right of the mark is ahead of time.
-  - a short pace projection, such as `Lasts 4h 12m · ~19% at reset` or
-    `Runs out in 3d 6h, 15h before reset`. It extrapolates the used percentage over the elapsed
-    time; token counts are not used, because how they map to a provider's allowance is unknown.
+  - a two-line pace projection with the values in bold: "Lasts **4h 8m**" over "**17%** at
+    reset", or, in yellow, "Runs out in **3d 6h**" over "**15h** before reset". A used-up
+    allowance says "Used up" in red. The projection extrapolates the used percentage over the
+    elapsed time; token counts are not used, because how they map to a provider's allowance is
+    unknown.
 
   Choosing a bar focuses the whole report on that hour or day and on the provider; for a
   model-scoped limit such as Fable, it also selects that limit's models. Choosing it again clears
