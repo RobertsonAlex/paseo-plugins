@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, writeFile, appendFile, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, appendFile, rm, readFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { UsageIndex } from "./indexer";
+import { INDEX_VERSION, UsageStore } from "./index-store";
 import { SnapshotSchema } from "../shared/schema";
 import { EMPTY_FILTERS, filterSessions } from "../shared/model";
 
@@ -207,4 +208,59 @@ test("unavailable provider directories produce an empty completed scan without m
     assert.equal(snapshot.scanning, false);
     assert.deepEqual(snapshot.warnings, []);
   } finally { index.dispose(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the persistent index serves unchanged sources after a restart and follows changes and deletions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-usage-persist-"));
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data"), cursor: [join(root, "cursor")] };
+  const database = join(root, "index", "usage.sqlite");
+  const claudePath = join(roots.claude, "projects", "-worktree", "c1.jsonl");
+  const record = (input: number) => JSON.stringify({ type: "assistant", uuid: "r1", timestamp: "2026-09-01T12:00:00Z", sessionId: "c1", message: { id: "r1", model: "claude-fable-5", content: [{ type: "text", text: "PRIVATE_TRANSCRIPT_TEXT" }], usage: { input_tokens: input, output_tokens: 5 } } }) + "\n";
+  const tokens = async (index: UsageIndex) => {
+    index.snapshot(true);
+    const snapshot = await index.settled();
+    return filterSessions(snapshot.sessions, EMPTY_FILTERS).find((r) => r.session.id === "claude:c1")?.metrics.inputTokens;
+  };
+  const restart = async () => { const index = new UsageIndex(roots, database); try { return await tokens(index); } finally { index.dispose(); } };
+  try {
+    const mtime = new Date("2026-09-01T12:00:00Z");
+    await save(claudePath, record(100));
+    await utimes(claudePath, mtime, mtime);
+    assert.equal(await restart(), 100);
+    const stored = new DatabaseSync(database, { readOnly: true });
+    const rows = stored.prepare("SELECT kind, path, data FROM sources").all() as { kind: string; path: string; data: string }[];
+    stored.close();
+    assert.deepEqual(rows.map((row) => [row.kind, row.path]), [["file", claudePath]]);
+    assert.ok(!rows[0].data.includes("PRIVATE_TRANSCRIPT_TEXT"));
+
+    // Same size and mtime: a restarted index must not reread the file.
+    await writeFile(claudePath, record(200));
+    await utimes(claudePath, mtime, mtime);
+    assert.equal(await restart(), 100);
+
+    await utimes(claudePath, mtime, new Date(mtime.getTime() + 1000));
+    assert.equal(await restart(), 200);
+
+    await rm(claudePath);
+    assert.equal(await restart(), undefined);
+    const emptied = new DatabaseSync(database, { readOnly: true });
+    assert.deepEqual(emptied.prepare("SELECT path FROM sources").all(), []);
+    emptied.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("an index from another version is rebuilt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-usage-version-"));
+  const database = join(root, "usage.sqlite");
+  try {
+    const old = new DatabaseSync(database);
+    old.exec("CREATE TABLE sources (kind TEXT, path TEXT, signature TEXT, data TEXT, indexed_at TEXT); INSERT INTO sources VALUES ('file', '/stale', '1:1', '{}', 'then'); PRAGMA user_version = 999");
+    old.close();
+    const store = UsageStore.open(database)!;
+    assert.deepEqual([...store.load().files.keys()], []);
+    store.close();
+    const reopened = new DatabaseSync(database, { readOnly: true });
+    assert.equal((reopened.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, INDEX_VERSION);
+    reopened.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

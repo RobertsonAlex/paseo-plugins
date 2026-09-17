@@ -11,7 +11,7 @@ export type StoreReader = (db: DatabaseSync, file: { mtimeMs: number }) => Store
 type SqliteModule = typeof import("node:sqlite");
 type Row = Record<string, unknown>;
 
-function loadSqlite(): SqliteModule | null {
+export function loadSqlite(): SqliteModule | null {
   const getBuiltin = (process as { getBuiltinModule?: (id: string) => unknown }).getBuiltinModule;
   if (typeof getBuiltin !== "function") return null;
   try {

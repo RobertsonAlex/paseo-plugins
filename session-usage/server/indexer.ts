@@ -1,6 +1,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
+import { UsageStore, type IndexChanges, type IndexedFile, type IndexedStore } from "./index-store";
 import { paseoHome } from "./paseo-home";
 import { object, string, parseTranscript, type ParsedTranscript } from "./parser";
 import { readCursorStore, readDevinStore, readOpenCodeStore, readStore, type StoreReader, type StoreSession } from "./stores";
@@ -176,15 +177,25 @@ function joinSession(source: Source, parsed: ParsedTranscript, metadata: Metadat
   };
 }
 
-/** One background scan per installation, four streams at once, size/mtime cache in memory only. */
+export function defaultRoots(): Roots {
+  return { paseo: paseoHome(), claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), codex: process.env.CODEX_HOME ?? join(homedir(), ".codex"), data: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), cursor: cursorRoots() };
+}
+
+/**
+ * One background scan per installation, four streams at once. Parse results are cached by
+ * size/mtime (stores: database and WAL) in memory and, given a database path, in a persistent
+ * index, so only new or changed sources are read after a restart.
+ */
 export class UsageIndex {
-  private cache = new Map<string, { size: number; mtimeMs: number; parsed: ParsedTranscript }>();
-  private storeCache = new Map<string, { signature: string; sessions: StoreSession[] }>();
+  private cache = new Map<string, IndexedFile>();
+  private storeCache = new Map<string, IndexedStore>();
+  private store: UsageStore | null = null;
+  private loaded = false;
   private state: Snapshot = { sessions: [], scanning: false, completed: 0, total: 0, generatedAt: null, warnings: [] };
   private controller = new AbortController();
   private running: Promise<void> | null = null;
   private lastScan = 0;
-  constructor(private roots: Roots = { paseo: paseoHome(), claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), codex: process.env.CODEX_HOME ?? join(homedir(), ".codex"), data: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), cursor: cursorRoots() }) {}
+  constructor(private roots: Roots = defaultRoots(), private databasePath: string | null = null) {}
 
   snapshot(refresh = false): Snapshot {
     if (!this.controller.signal.aborted && !this.running && (refresh || !this.lastScan || Date.now() - this.lastScan > 30_000)) {
@@ -196,9 +207,24 @@ export class UsageIndex {
     return this.state;
   }
   async settled(): Promise<Snapshot> { await this.running; return this.state; }
-  dispose(): void { this.controller.abort(); this.cache.clear(); this.storeCache.clear(); this.state.sessions = []; }
+  dispose(): void { this.controller.abort(); this.store?.close(); this.store = null; this.cache.clear(); this.storeCache.clear(); this.state.sessions = []; }
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (!this.databasePath) return;
+    this.store = UsageStore.open(this.databasePath);
+    if (!this.store) return;
+    try {
+      const contents = this.store.load();
+      this.cache = contents.files;
+      this.storeCache = contents.stores;
+    } catch (error) { console.warn(`[session-usage] cannot load usage index: ${error instanceof Error ? error.message : String(error)}`); }
+  }
 
   private async scan(): Promise<void> {
+    this.load();
+    const changes: IndexChanges = { files: new Map(), stores: new Map(), removedFiles: [], removedStores: [] };
     const warnings = new Set<string>();
     const [metadata, sources] = await Promise.all([readMetadata(this.roots.paseo, warnings), discover(this.roots, warnings, this.controller.signal)]);
     this.state = { ...this.state, total: sources.length };
@@ -210,10 +236,14 @@ export class UsageIndex {
         if (this.controller.signal.aborted) throw new Error("Scan cancelled");
         const source = sources[next++];
         try {
-          const cached = this.cache.get(source.path);
-          const parsed = cached?.size === source.size && cached.mtimeMs === source.mtimeMs ? cached.parsed : await parseTranscript(source.path, source.provider, this.controller.signal);
-          this.cache.set(source.path, { size: source.size, mtimeMs: source.mtimeMs, parsed });
-          sessions.push(joinSession(source, parsed, metadata));
+          const signature = `${source.size}:${source.mtimeMs}`;
+          let entry = this.cache.get(source.path);
+          if (entry?.signature !== signature) {
+            entry = { signature, parsed: await parseTranscript(source.path, source.provider, this.controller.signal) };
+            this.cache.set(source.path, entry);
+            changes.files.set(source.path, entry);
+          }
+          sessions.push(joinSession(source, entry.parsed, metadata));
         } catch {
           if (this.controller.signal.aborted) return;
           const session = joinSession(source, { nativeId: source.nativeId, parentId: source.parentId, cwd: "", title: "", branch: "", startedAt: null, endedAt: null, buckets: [], warnings: ["Transcript could not be read."] }, metadata);
@@ -226,7 +256,7 @@ export class UsageIndex {
     await Promise.all(Array.from({ length: Math.min(4, sources.length) }, worker));
     if (this.controller.signal.aborted) throw new Error("Scan cancelled");
     const readable = new Set(["claude", "codex"]);
-    sessions.push(...await this.readStores(metadata, warnings, readable));
+    sessions.push(...await this.readStores(metadata, warnings, readable, changes));
     const seen = new Set(sessions.map((s) => s.id));
     for (const [key, agent] of metadata.agents) {
       if (seen.has(key)) continue;
@@ -236,12 +266,20 @@ export class UsageIndex {
       session.coverage = "missing";
       sessions.push(session);
     }
-    for (const path of this.cache.keys()) if (!livePaths.has(path)) this.cache.delete(path);
+    for (const path of this.cache.keys()) if (!livePaths.has(path)) { this.cache.delete(path); changes.removedFiles.push(path); }
+    this.persist(changes);
     this.state = { sessions: sessions.sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? "")), scanning: false, completed: sources.length, total: sources.length, generatedAt: new Date().toISOString(), warnings: [...warnings] };
   }
 
+  private persist(changes: IndexChanges): void {
+    if (!this.store || this.controller.signal.aborted) return;
+    if (!changes.files.size && !changes.stores.size && !changes.removedFiles.length && !changes.removedStores.length) return;
+    try { this.store.save(changes); }
+    catch (error) { console.warn(`[session-usage] cannot update usage index: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
   /** Each store is reread only when its database or WAL file changes. Adds the provider IDs it resolves to `readable`. */
-  private async readStores(metadata: Metadata, warnings: Set<string>, readable: Set<string>): Promise<Session[]> {
+  private async readStores(metadata: Metadata, warnings: Set<string>, readable: Set<string>, changes: IndexChanges): Promise<Session[]> {
     const sessions: Session[] = [];
     const agentsByNativeId = new Map<string, Agent>();
     for (const agent of metadata.agents.values()) if (agent.nativeId && agent.provider !== "claude" && agent.provider !== "codex") agentsByNativeId.set(agent.nativeId, agent);
@@ -260,7 +298,7 @@ export class UsageIndex {
           mtimeMs = Math.max(database.mtimeMs, wal?.mtimeMs ?? 0);
         } catch (error) {
           if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) warnings.add(`Cannot read session store: ${path}`);
-          this.storeCache.delete(path);
+          if (this.storeCache.delete(path)) changes.removedStores.push(path);
           continue;
         }
         let cached = this.storeCache.get(path);
@@ -268,6 +306,7 @@ export class UsageIndex {
           try {
             cached = { signature, sessions: readStore(path, group.read, { mtimeMs }) };
             this.storeCache.set(path, cached);
+            changes.stores.set(path, cached);
           } catch { warnings.add(`Cannot read session store: ${path}`); }
         }
         if (!cached) continue;
@@ -295,7 +334,7 @@ export class UsageIndex {
         sessions.push(joinSession({ path, provider, nativeId: session.nativeId, parentId: session.parentId, kind: session.parentId ? "subagent" : "main", archived: session.archived, size: session.bytes, mtimeMs: 0 }, session.parsed, metadata));
       }
     }
-    for (const path of this.storeCache.keys()) if (!live.has(path)) this.storeCache.delete(path);
+    for (const path of this.storeCache.keys()) if (!live.has(path)) { this.storeCache.delete(path); changes.removedStores.push(path); }
     return sessions;
   }
 }
