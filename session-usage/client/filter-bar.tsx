@@ -1,12 +1,15 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { Dropdown, type DropdownOption } from "./dropdown";
 import { EMPTY_FILTERS, type Filters } from "../shared/model";
 import type { Session } from "../shared/schema";
 
 export function FilterBar({ sessions, filters, onChange, theme, compact }: { sessions: Session[]; filters: Filters; onChange(filters: Filters): void; theme: PluginTheme; compact: boolean }) {
-  const [more, setMore] = useState(false);
+  const [more, setMore] = useState(filters.models.length > 0);
+  // Allowance charts can select models; show that filter when it changes from outside.
+  const modelFiltered = filters.models.length > 0;
+  useEffect(() => { if (modelFiltered) setMore(true); }, [modelFiltered]);
   const text = { color: theme.colors.foreground, fontSize: 13 };
   const input = { ...text, minHeight: 40, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, backgroundColor: theme.colors.surface1, paddingHorizontal: 12 };
   function options(values: { id: string; label: string }[]): DropdownOption[] {

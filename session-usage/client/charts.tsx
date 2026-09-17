@@ -8,11 +8,11 @@ import { Dropdown } from "./dropdown";
 
 const GROUPS: { id: Grouping; label: string }[] = [{ id: "provider", label: "Provider" }, { id: "day", label: "Day" }, { id: "week", label: "Week (Monday)" }, { id: "month", label: "Month" }, { id: "project", label: "Project" }, { id: "model", label: "Model" }];
 // Categorical hues in fixed order, stepped for light and dark surfaces. Every bar also carries its provider label.
-const SERIES_COLORS = {
+export const SERIES_COLORS = {
   light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
-function darkSurface(color: string): boolean {
+export function darkSurface(color: string): boolean {
   const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(color);
   const rgb = hex ? hex.slice(1).map((part) => Number.parseInt(part, 16)) : /^rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/.exec(color)?.slice(1).map(Number);
   return rgb ? 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] < 128 : false;
