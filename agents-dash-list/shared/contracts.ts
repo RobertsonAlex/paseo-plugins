@@ -62,8 +62,11 @@ export const UnreadMarksSchema = z.object({
 export type UnreadMarks = z.infer<typeof UnreadMarksSchema>;
 
 /**
- * Lists the plugin-owned "mark as unread" flags. When `activeWorkspaceIds` is supplied, marks
- * for workspaces no longer in that set are dropped so archived workspaces do not accumulate.
+ * Lists the plugin-owned "mark as unread" flags. The dash shows several hosts but has only this
+ * one store, so ids from every host share the record; workspace ids are UUIDs, so they do not
+ * collide. When `activeWorkspaceIds` is supplied it must be the census of *all* those hosts:
+ * marks for workspaces no longer in that set are dropped so archived workspaces do not
+ * accumulate, and a list missing a host would delete its marks.
  */
 export const listUnreadMarks = defineRpc({
   name: "agents-dash-list.unread.list",
@@ -78,19 +81,28 @@ export const setUnreadMark = defineRpc({
 });
 
 /**
- * Viewing preferences the dash keeps between opens: which projects are shown and which groups
- * are folded shut. Stored per daemon next to the unread marks, so they follow the host the dash
- * is looking at.
+ * Viewing preferences the dash keeps between opens: which hosts and projects are shown and which
+ * groups are folded shut. Stored by the plugin's server entry next to the unread marks, so they
+ * follow the daemon the dash was opened on rather than the device it is drawn on.
  */
 export const DashSettingsSchema = z.object({
   /** Project IDs to show; empty means every project. */
   projectIds: z.array(z.string().min(1)).max(500),
+  /**
+   * Server IDs to show; empty means every configured host. Written by older versions of the
+   * plugin without this field, so it is optional on the way in and defaulted on the way out.
+   */
+  hostIds: z.array(z.string().min(1)).max(100).default([]),
   collapsedGroups: z.array(z.enum(DASH_GROUPS)).max(DASH_GROUPS.length),
 });
 
 export type DashSettings = z.infer<typeof DashSettingsSchema>;
 
-export const DEFAULT_DASH_SETTINGS: DashSettings = { projectIds: [], collapsedGroups: [] };
+export const DEFAULT_DASH_SETTINGS: DashSettings = {
+  projectIds: [],
+  hostIds: [],
+  collapsedGroups: [],
+};
 
 export const getDashSettings = defineRpc({
   name: "agents-dash-list.settings.get",

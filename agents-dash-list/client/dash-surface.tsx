@@ -1,8 +1,8 @@
-import type { PaseoWorkspace } from "@getpaseo/client";
+import type { PaseoApi, PaseoWorkspace } from "@getpaseo/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { type PluginSurfaceProps, usePaseo } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -20,24 +20,34 @@ import {
   DASH_GROUP_ICONS,
   DASH_GROUP_LABELS,
   type DashGroup,
+  type DashHostSource,
   buildDashModel,
   canArchiveGroup,
+  dashWorkspaceKey,
   quickActionsFor,
 } from "../shared/model";
 import { ArchiveGroupButton } from "./bulk-archive";
 import { Dropdown, type DropdownOption } from "./dropdown";
-import { useDashDirectory } from "./use-directory";
+import { useDashHosts, resolveHostApi } from "./hosts";
+import { type HostDirectory, useDashDirectories } from "./use-directory";
 import { useDecorations } from "./use-decorations";
 import { useDashSettings } from "./use-settings";
 import { useUnreadMarks } from "./use-unread";
 import { WorkspaceRow, buildLabelColors } from "./workspace-row";
 
 /**
- * The sidebar surface: every workspace of the selected host, grouped by what it needs from the
- * user. The workspace and agent directories stream in over the SDK, project icons and the label
- * catalog come from the plugin's server entry, and the grouping itself is `buildDashModel`. The
- * project filter and the folded groups are viewing preferences the server entry stores per
- * daemon, so the dash opens the way it was left, app restarts included.
+ * The sidebar surface: every workspace of every configured host, grouped by what it needs from
+ * the user. Each host's workspace and agent directories stream in over its own SDK connection and
+ * are merged into one feed by `buildDashModel`; every row carries the host it came from, opens
+ * there, and is archived through that host's API.
+ *
+ * Project icons and the label catalog come from the plugin's server entry, which only runs on the
+ * host the dash was opened on: plugin RPC has no cross-host form. Icons are therefore requested
+ * for that host's projects alone and other hosts' rows fall back to the project initial, while
+ * the label catalog — a small list of names and colors — is applied to every host.
+ *
+ * The host filter, the project filter and the folded groups are viewing preferences the server
+ * entry stores per daemon, so the dash opens the way it was left, app restarts included.
  */
 
 /** How often the relative timestamps are recomputed. */
@@ -50,7 +60,13 @@ const NO_WORKSPACE_IDS: readonly string[] = [];
 
 export function DashSurface({ theme, host, layout, navigation }: PluginSurfaceProps) {
   const paseo = usePaseo();
-  const directory = useDashDirectory(paseo, host.id);
+  const own = useMemo(() => ({ id: host.id, api: paseo }), [host.id, paseo]);
+  const hosts = useDashHosts(host);
+  const directories = useDashDirectories(hosts, own);
+  const resolveApi = useCallback(
+    (serverId: string): PaseoApi | null => resolveHostApi(serverId, own),
+    [own],
+  );
   const scheme = useMemo(() => themeScheme(theme), [theme]);
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
 
@@ -60,70 +76,131 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
     return () => clearInterval(timer);
   }, []);
 
-  const workspaceIds = useMemo(
-    () => [...directory.workspaces.keys()],
+  // Every host's ids, filters ignored: the server prunes the marks it is not shown, and a mark
+  // belongs to a workspace whether or not the user is currently looking at its host.
+  const allWorkspaceIds = useMemo(
+    () => directories.hosts.flatMap((entry) => [...entry.workspaces.keys()]),
     // The maps are mutated in place; `version` is what says they changed.
-    [directory.workspaces, directory.version],
+    [directories.hosts, directories.version],
   );
-  const projects = useMemo(
-    () => collectProjects(directory.workspaces.values()),
-    [directory.workspaces, directory.version],
+  const censusComplete = directories.hosts.every(
+    (entry) => entry.status === "ready" && entry.complete,
   );
 
   const settings = useDashSettings(host.id);
+  const selectedHosts = settings.hostIds;
+  const visibleHosts = useMemo(
+    () =>
+      selectedHosts.size === 0
+        ? directories.hosts
+        : directories.hosts.filter((entry) => selectedHosts.has(entry.serverId)),
+    [directories.hosts, selectedHosts],
+  );
+  const hostOptions = useMemo(
+    () =>
+      directories.hosts.map((entry) => ({
+        id: entry.serverId,
+        label: entry.status === "offline" ? `${entry.label} (offline)` : entry.label,
+        icon: "Server",
+        count: entry.workspaces.size,
+      })),
+    [directories.hosts, directories.version],
+  );
+  const hostSummary = summarizeChoice(
+    selectedHosts,
+    new Map(directories.hosts.map((entry) => [entry.serverId, entry.label])),
+  );
+
+  const visibleWorkspaceCount = useMemo(
+    () => visibleHosts.reduce((count, entry) => count + entry.workspaces.size, 0),
+    [visibleHosts, directories.version],
+  );
+
+  // Icons are read from disk by the server entry, which only runs on the host the dash was
+  // opened on; another host's project paths mean nothing there.
+  const ownProjects = useMemo(() => {
+    const own = directories.hosts.find((entry) => entry.serverId === host.id);
+    return own ? collectProjects(own.workspaces.values()) : [];
+  }, [directories.hosts, directories.version, host.id]);
+
   const projectOptions = useMemo(
-    () => buildProjectOptions(directory.workspaces.values()),
-    [directory.workspaces, directory.version],
+    () => buildProjectOptions(visibleHosts),
+    [visibleHosts, directories.version],
   );
   const projectNames = useMemo(
     () => new Map(projectOptions.map((option) => [option.id, option.label])),
     [projectOptions],
   );
-  const projectSummary = summarizeProjects(settings.projectIds, projectNames);
+  const projectSummary = summarizeChoice(settings.projectIds, projectNames);
 
-  const decorations = useDecorations(host.id, projects);
+  const decorations = useDecorations(host.id, ownProjects);
   const labelColors = useMemo(() => buildLabelColors(decorations.labels), [decorations.labels]);
-  // Pruning on the server keys off this list, so it is only handed over once every page of the
-  // directory has landed and the whole census still fits the contract; a partial list would
-  // permanently delete the marks of the workspaces it omits.
+  // Pruning on the server keys off this list, so it is only handed over once every page of every
+  // host's directory has landed and the whole census still fits the contract; a partial list
+  // would permanently delete the marks of the workspaces it omits.
   const pruneIds =
-    directory.status === "ready" &&
-    directory.complete &&
-    workspaceIds.length <= MAX_PRUNE_WORKSPACE_IDS
-      ? workspaceIds
+    censusComplete && allWorkspaceIds.length <= MAX_PRUNE_WORKSPACE_IDS
+      ? allWorkspaceIds
       : NO_WORKSPACE_IDS;
   const { marks, setUnread } = useUnreadMarks(host.id, pruneIds);
 
   const selectedProjects = settings.projectIds;
-  const model = useMemo(
-    () =>
-      buildDashModel({
-        workspaces: filterByProject(directory.workspaces.values(), selectedProjects),
-        agents: directory.agents.values(),
-        unreadMarks: marks,
-      }),
-    [directory.agents, directory.workspaces, directory.version, marks, selectedProjects],
+  const sources = useMemo(
+    (): DashHostSource[] =>
+      visibleHosts.map((entry) => ({
+        serverId: entry.serverId,
+        hostLabel: entry.label,
+        workspaces: filterByProject(entry.workspaces.values(), selectedProjects),
+        agents: entry.agents.values(),
+      })),
+    [visibleHosts, directories.version, selectedProjects],
   );
-  const filtered = selectedProjects.size > 0;
+  const model = useMemo(
+    () => buildDashModel({ hosts: sources, unreadMarks: marks }),
+    [sources, marks],
+  );
+  const filtered = selectedProjects.size > 0 || selectedHosts.size > 0;
   const collapsed = settings.collapsedGroups;
   const toggleGroup = settings.toggleGroup;
 
   // Settings decide what is shown and what is folded; drawing before they answer would flash
   // the unfiltered, unfolded dash and then rearrange it.
-  const loading = (directory.status === "loading" && model.total === 0) || !settings.ready;
-  const failed = directory.status === "error";
+  const loading =
+    (visibleHosts.some((entry) => entry.status === "loading") && model.total === 0) ||
+    !settings.ready;
+  const troubled = visibleHosts.filter(
+    (entry) => entry.status === "error" || entry.status === "offline",
+  );
+  // Only a total loss takes over the screen: with one host answering, the others are a notice
+  // above the feed so the workspaces that did arrive stay usable.
+  const failed = visibleHosts.length > 0 && troubled.length === visibleHosts.length;
 
   return (
     <View style={styles.screen}>
       {/* The screen header above already carries the icon and the "Agents dash" title, so this
-          row only holds what it does not: the count, the project filter and the refresh
-          affordance. */}
+          row only holds what it does not: the count, the host and project filters and the
+          refresh affordance. */}
       <View style={styles.header}>
         <Text style={styles.total} numberOfLines={1}>
-          {filtered ? `${model.total} of ${workspaceIds.length}` : model.total}{" "}
-          {(filtered ? workspaceIds.length : model.total) === 1 ? "workspace" : "workspaces"}
+          {filtered ? `${model.total} of ${allWorkspaceIds.length}` : model.total}{" "}
+          {(filtered ? allWorkspaceIds.length : model.total) === 1 ? "workspace" : "workspaces"}
         </Text>
         <View style={styles.headerSpacer} />
+        {/* A single configured host needs no filter: the rows still name it. */}
+        {directories.hosts.length > 1 ? (
+          <Dropdown
+            label="Host"
+            icon="Server"
+            summary={hostSummary}
+            options={hostOptions}
+            selected={selectedHosts}
+            multi
+            onToggle={settings.toggleHost}
+            onClear={() => settings.setHostIds([])}
+            theme={theme}
+            compact={layout.compact}
+          />
+        ) : null}
         <Dropdown
           label="Project"
           icon="FolderGit2"
@@ -140,7 +217,7 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
           theme={theme}
           style={styles.refresh}
           busy={loading}
-          onPress={directory.refresh}
+          onPress={directories.refresh}
         />
       </View>
 
@@ -150,13 +227,11 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
         </View>
       ) : failed ? (
         <View style={styles.centered}>
-          <Text style={styles.error}>
-            {directory.error ?? "Could not load the workspace directory."}
-          </Text>
+          <Text style={styles.error}>{describeTrouble(troubled)}</Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Retry loading the dash"
-            onPress={directory.refresh}
+            onPress={directories.refresh}
             style={({ pressed }) => [styles.retry, pressed ? styles.retryPressed : null]}
           >
             <Text style={styles.retryText}>Retry</Text>
@@ -164,24 +239,29 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
         </View>
       ) : model.groups.length === 0 ? (
         <View style={styles.centered}>
-          <Text style={styles.empty}>
-            {filtered
-              ? `No workspaces in the selected ${selectedProjects.size === 1 ? "project" : "projects"} on ${host.label}`
-              : `No workspaces on ${host.label}`}
-          </Text>
+          <Text style={styles.empty}>{describeEmpty(visibleHosts, selectedProjects)}</Text>
           {filtered ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Show all projects"
-              onPress={() => settings.setProjectIds([])}
+              accessibilityLabel="Clear the filters"
+              onPress={() => {
+                settings.setProjectIds([]);
+                settings.setHostIds([]);
+              }}
               style={({ pressed }) => [styles.retry, pressed ? styles.retryPressed : null]}
             >
-              <Text style={styles.retryText}>Show all projects</Text>
+              <Text style={styles.retryText}>Clear filters</Text>
             </Pressable>
           ) : null}
         </View>
       ) : (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+          {troubled.length > 0 ? (
+            <View style={styles.notice}>
+              <Icon name="TriangleAlert" size={13} color={theme.colors.statusWarning} />
+              <Text style={styles.noticeText}>{describeTrouble(troubled)}</Text>
+            </View>
+          ) : null}
           {model.groups.map(({ group, workspaces }) => (
             <GroupSection
               key={group}
@@ -198,24 +278,27 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
                     group={group}
                     workspaces={workspaces}
                     theme={theme}
-                    paseo={paseo}
+                    resolveApi={resolveApi}
                   />
                 ) : null
               }
             >
               {workspaces.map((workspace) => (
                 <WorkspaceRow
-                  key={workspace.id}
+                  key={dashWorkspaceKey(workspace)}
                   workspace={workspace}
                   actions={quickActionsFor(group)}
                   theme={theme}
                   scheme={scheme}
-                  hostLabel={host.label}
                   nowMs={nowMs}
-                  iconUri={decorations.icons[workspace.projectId] ?? null}
+                  iconUri={
+                    workspace.serverId === host.id
+                      ? (decorations.icons[workspace.projectId] ?? null)
+                      : null
+                  }
                   labelColors={labelColors}
                   navigation={navigation}
-                  paseo={paseo}
+                  paseo={resolveApi(workspace.serverId)}
                   setUnread={setUnread}
                 />
               ))}
@@ -225,6 +308,31 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
       )}
     </View>
   );
+}
+
+/** The one sentence that names what is wrong, however many hosts are in trouble. */
+function describeTrouble(troubled: readonly HostDirectory[]): string {
+  if (troubled.length === 0) return "";
+  const [first] = troubled;
+  if (troubled.length === 1 && first) {
+    if (first.status === "offline") return `${first.label} is disconnected.`;
+    return first.error ?? `Could not load the workspace directory on ${first.label}.`;
+  }
+  return `${troubled.length} hosts could not be read: ${troubled
+    .map((entry) => entry.label)
+    .join(", ")}.`;
+}
+
+/** What an empty feed means depends on whether a filter, or the hosts themselves, emptied it. */
+function describeEmpty(
+  visibleHosts: readonly HostDirectory[],
+  selectedProjects: ReadonlySet<string>,
+): string {
+  const [only] = visibleHosts;
+  if (!only) return "No hosts selected";
+  const where = visibleHosts.length === 1 ? `on ${only.label}` : `on ${visibleHosts.length} hosts`;
+  if (selectedProjects.size === 0) return `No workspaces ${where}`;
+  return `No workspaces in the selected ${selectedProjects.size === 1 ? "project" : "projects"} ${where}`;
 }
 
 /**
@@ -340,20 +448,23 @@ function filterByProject(
 }
 
 /**
- * One picker row per project with its workspace count, alphabetically. Two projects can share a
- * display name (a checkout and a plain directory); the root path tells them apart.
+ * One picker row per project with its workspace count, alphabetically, across every visible host.
+ * Two projects can share a display name (a checkout and a plain directory, or the same repository
+ * checked out on two hosts); the root path tells them apart.
  */
-function buildProjectOptions(workspaces: Iterable<PaseoWorkspace>): DropdownOption[] {
+function buildProjectOptions(hosts: readonly HostDirectory[]): DropdownOption[] {
   const counts = new Map<string, { name: string; rootPath: string; count: number }>();
-  for (const workspace of workspaces) {
-    const entry = counts.get(workspace.projectId);
-    if (entry) entry.count += 1;
-    else {
-      counts.set(workspace.projectId, {
-        name: workspace.projectDisplayName,
-        rootPath: workspace.projectRootPath,
-        count: 1,
-      });
+  for (const host of hosts) {
+    for (const workspace of host.workspaces.values()) {
+      const entry = counts.get(workspace.projectId);
+      if (entry) entry.count += 1;
+      else {
+        counts.set(workspace.projectId, {
+          name: workspace.projectDisplayName,
+          rootPath: workspace.projectRootPath,
+          count: 1,
+        });
+      }
     }
   }
   const nameCounts = new Map<string, number>();
@@ -371,11 +482,11 @@ function buildProjectOptions(workspaces: Iterable<PaseoWorkspace>): DropdownOpti
 }
 
 /**
- * Text on the project trigger: the name for one project, a count for more. A stored id whose
- * project has since gone still counts as a choice, so the trigger never claims "All" while rows
+ * Text on a filter trigger: the name for one choice, a count for more. A stored id whose project
+ * or host has since gone still counts as a choice, so the trigger never claims "All" while rows
  * are being hidden.
  */
-function summarizeProjects(
+function summarizeChoice(
   selected: ReadonlySet<string>,
   names: ReadonlyMap<string, string>,
 ): string | null {
@@ -424,6 +535,18 @@ function createStyles(theme: PluginTheme, compact: boolean) {
 
     scroll: { flex: 1 },
     content: { paddingHorizontal: gutter, paddingVertical: 12, gap: compact ? 12 : 16 },
+    notice: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    noticeText: { color: theme.colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
     group: {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border,

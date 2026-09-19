@@ -17,9 +17,9 @@ import { describeArchiveRisks } from "./archive-confirm";
 /**
  * "Archive all" for a whole group: a header button that always asks first, since one press
  * removes several workspaces at once. The dialog names how many go and lists the ones whose
- * worktree still holds unsaved work. Archiving runs one workspace at a time so the daemon is
- * not flooded, and the outcome goes to the toast host, which outlives the group when its last
- * row leaves.
+ * worktree still holds unsaved work. A group can span hosts, so each workspace is archived
+ * through its own host's API, one at a time so no daemon is flooded, and the outcome goes to the
+ * toast host, which outlives the group when its last row leaves.
  */
 
 const PREVIEW_LIMIT = 8;
@@ -28,11 +28,14 @@ export interface ArchiveGroupButtonProps {
   group: DashGroup;
   workspaces: readonly DashWorkspace[];
   theme: PluginTheme;
-  paseo: PaseoApi;
+  /** Answers null for a host that is no longer connected; its workspaces are reported as failed. */
+  resolveApi(serverId: string): PaseoApi | null;
 }
 
 interface Target {
   id: string;
+  serverId: string;
+  hostLabel: string;
   name: string;
   risks: readonly string[];
 }
@@ -52,7 +55,12 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-export function ArchiveGroupButton({ group, workspaces, theme, paseo }: ArchiveGroupButtonProps) {
+export function ArchiveGroupButton({
+  group,
+  workspaces,
+  theme,
+  resolveApi,
+}: ArchiveGroupButtonProps) {
   const toast = useToast();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [hovered, setHovered] = useState(false);
@@ -79,6 +87,8 @@ export function ArchiveGroupButton({ group, workspaces, theme, paseo }: ArchiveG
         .filter((workspace) => workspace.archivingAt === null)
         .map((workspace) => ({
           id: workspace.id,
+          serverId: workspace.serverId,
+          hostLabel: workspace.hostLabel,
           name: workspace.name,
           risks: describeArchiveRisks(workspace),
         })),
@@ -92,8 +102,14 @@ export function ArchiveGroupButton({ group, workspaces, theme, paseo }: ArchiveG
     const failures: string[] = [];
     let archived = 0;
     for (const target of targets) {
+      const api = resolveApi(target.serverId);
+      if (!api) {
+        failures.push(`${target.name}: ${target.hostLabel} is disconnected`);
+        if (aliveRef.current) setDone(archived + failures.length);
+        continue;
+      }
       try {
-        const result = await paseo.workspaces.archive(target.id);
+        const result = await api.workspaces.archive(target.id);
         if (result.error) failures.push(`${target.name}: ${result.error}`);
         else archived += 1;
       } catch (cause) {
@@ -112,7 +128,7 @@ export function ArchiveGroupButton({ group, workspaces, theme, paseo }: ArchiveG
       setBusy(false);
       setOpen(false);
     }
-  }, [label, paseo, targets, toast]);
+  }, [label, resolveApi, targets, toast]);
 
   const risky = targets.filter((target) => target.risks.length > 0);
   const hiddenRisky = Math.max(0, risky.length - PREVIEW_LIMIT);
@@ -161,7 +177,7 @@ export function ArchiveGroupButton({ group, workspaces, theme, paseo }: ArchiveG
             {risky.length > 0 ? (
               <ScrollView style={styles.riskList} contentContainerStyle={styles.riskListContent}>
                 {risky.slice(0, PREVIEW_LIMIT).map((target) => (
-                  <View key={target.id} style={styles.risk}>
+                  <View key={`${target.serverId}/${target.id}`} style={styles.risk}>
                     <Icon name="TriangleAlert" size={12} color={theme.colors.statusWarning} />
                     <Text style={styles.riskName} numberOfLines={1}>
                       {target.name}

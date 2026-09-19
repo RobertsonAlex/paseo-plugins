@@ -16,8 +16,11 @@ Current plugins:
 - `agent-heartbeats`: adds a compact heartbeat-count composer pill and an agent-scoped panel for
   listing, creating, editing, and deleting heartbeats.
 - `agents-dash-list`: adds an "Agents dash" sidebar surface that lists workspaces and their agents
-  grouped by status (waiting, unread, in progress, failing, approved, idle, closed), with quick
-  archive and mark-as-unread actions.
+  from every configured host in one feed, grouped by status (waiting, unread, in progress, failing,
+  approved, idle, closed), with a host filter, per-row host labels, and quick archive and
+  mark-as-unread actions. Reads other hosts through `useHosts` / `getPaseoClient`; its own RPCs
+  (project icons, label catalog, unread marks, settings) still only run on the host it was opened
+  on, because plugin RPC has no cross-host form.
 - `agents-history`: adds an "Agents history" sidebar surface that lists every workspace and agent,
   archived ones included, with archived/provider/project/period filters and a search that ranks the
   providers' on-disk conversation transcripts through a SQLite FTS5 index (names, titles, branches,
