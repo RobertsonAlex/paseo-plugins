@@ -17,9 +17,13 @@ export interface DashSettingsApi {
   settings: DashSettings;
   ready: boolean;
   projectIds: ReadonlySet<string>;
+  /** Server IDs the user chose to show; empty means every configured host. */
+  hostIds: ReadonlySet<string>;
   collapsedGroups: ReadonlySet<DashGroup>;
   setProjectIds(projectIds: Iterable<string>): void;
   toggleProject(projectId: string): void;
+  setHostIds(hostIds: Iterable<string>): void;
+  toggleHost(serverId: string): void;
   toggleGroup(group: DashGroup): void;
 }
 
@@ -62,6 +66,7 @@ export function useDashSettings(hostId: string): DashSettingsApi {
 
   const settings = query.data ?? DEFAULT_DASH_SETTINGS;
   const projectIds = useMemo(() => new Set(settings.projectIds), [settings.projectIds]);
+  const hostIds = useMemo(() => new Set(settings.hostIds), [settings.hostIds]);
   const collapsedGroups = useMemo(
     () => new Set(settings.collapsedGroups),
     [settings.collapsedGroups],
@@ -91,6 +96,20 @@ export function useDashSettings(hostId: string): DashSettingsApi {
       }),
     [update],
   );
+  const setHostIds = useCallback(
+    (ids: Iterable<string>) => update((current) => ({ ...current, hostIds: [...new Set(ids)] })),
+    [update],
+  );
+  const toggleHost = useCallback(
+    (serverId: string) =>
+      update((current) => {
+        const next = new Set(current.hostIds);
+        if (next.has(serverId)) next.delete(serverId);
+        else next.add(serverId);
+        return { ...current, hostIds: [...next] };
+      }),
+    [update],
+  );
   const toggleGroup = useCallback(
     (group: DashGroup) =>
       update((current) => {
@@ -106,9 +125,12 @@ export function useDashSettings(hostId: string): DashSettingsApi {
     settings,
     ready: query.data !== undefined,
     projectIds,
+    hostIds,
     collapsedGroups,
     setProjectIds,
     toggleProject,
+    setHostIds,
+    toggleHost,
     toggleGroup,
   };
 }

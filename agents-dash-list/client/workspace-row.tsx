@@ -53,13 +53,13 @@ export interface WorkspaceRowProps {
   actions: readonly DashQuickAction[];
   theme: PluginTheme;
   scheme: ColorScheme;
-  hostLabel: string;
   nowMs: number;
   /** Resolved project icon as a `data:` URI, or null when the server found none. */
   iconUri: string | null;
   labelColors: ReadonlyMap<string, WorkspaceLabelColor>;
   navigation: RowNavigation;
-  paseo: PaseoApi;
+  /** The API of this workspace's own host, or null while that host is disconnected. */
+  paseo: PaseoApi | null;
   setUnread(workspaceId: string, unread: boolean): Promise<void>;
 }
 
@@ -94,7 +94,6 @@ function WorkspaceRowImpl({
   actions,
   theme,
   scheme,
-  hostLabel,
   nowMs,
   iconUri,
   labelColors,
@@ -126,6 +125,11 @@ function WorkspaceRowImpl({
   // already unmounted by then: the outcome goes to the toast host, which outlives it, and only
   // the state writes are guarded.
   const archive = useCallback(async () => {
+    if (!paseo) {
+      toast.error(`${workspace.hostLabel} is disconnected.`);
+      setConfirmOpen(false);
+      return;
+    }
     setArchiving(true);
     try {
       const result = await paseo.workspaces.archive(workspace.id);
@@ -139,7 +143,7 @@ function WorkspaceRowImpl({
         setConfirmOpen(false);
       }
     }
-  }, [paseo, toast, workspace.id, workspace.name]);
+  }, [paseo, toast, workspace.hostLabel, workspace.id, workspace.name]);
 
   const handleArchivePress = useCallback(() => {
     if (archiving) return;
@@ -160,8 +164,10 @@ function WorkspaceRowImpl({
     // A workspace on its way out must not be navigated into: its agents are being torn down.
     if (archiving || archivingRemotely) return;
     const firstAgent = workspace.agents[0];
-    if (firstAgent) navigation.openAgent({ agentId: firstAgent.id });
-    else navigation.openWorkspace({ workspaceId: workspace.id });
+    // `serverId` is what makes a row on another host open there instead of on this one; apps
+    // that predate multi-host navigation ignore the extra field and stay where they are.
+    if (firstAgent) navigation.openAgent({ agentId: firstAgent.id, serverId: workspace.serverId });
+    else navigation.openWorkspace({ workspaceId: workspace.id, serverId: workspace.serverId });
     if (workspace.unreadMarkedAt) void setUnread(workspace.id, false);
   }, [
     archiving,
@@ -170,14 +176,15 @@ function WorkspaceRowImpl({
     setUnread,
     workspace.agents,
     workspace.id,
+    workspace.serverId,
     workspace.unreadMarkedAt,
   ]);
 
   const openAgent = useCallback(
     (agentId: string) => {
-      navigation?.openAgent({ agentId });
+      navigation?.openAgent({ agentId, serverId: workspace.serverId });
     },
-    [navigation],
+    [navigation, workspace.serverId],
   );
 
   const rightSide = (
@@ -213,7 +220,6 @@ function WorkspaceRowImpl({
       <View style={styles.details}>
         <MetaLine
           workspace={workspace}
-          hostLabel={hostLabel}
           theme={theme}
           scheme={scheme}
           styles={styles}
@@ -292,7 +298,6 @@ function areRowPropsEqual(previous: WorkspaceRowProps, next: WorkspaceRowProps):
     previous.actions === next.actions &&
     previous.theme === next.theme &&
     previous.scheme === next.scheme &&
-    previous.hostLabel === next.hostLabel &&
     previous.nowMs === next.nowMs &&
     previous.iconUri === next.iconUri &&
     previous.labelColors === next.labelColors &&
@@ -306,6 +311,8 @@ function areRowPropsEqual(previous: WorkspaceRowProps, next: WorkspaceRowProps):
 function isSameWorkspace(previous: DashWorkspace, next: DashWorkspace): boolean {
   return (
     previous.id === next.id &&
+    previous.serverId === next.serverId &&
+    previous.hostLabel === next.hostLabel &&
     previous.name === next.name &&
     previous.projectId === next.projectId &&
     previous.projectName === next.projectName &&
@@ -623,7 +630,6 @@ function reviewVisual(pullRequest: DashPullRequest, theme: PluginTheme): MetaVis
 
 function MetaLine({
   workspace,
-  hostLabel,
   theme,
   scheme,
   styles,
@@ -631,7 +637,6 @@ function MetaLine({
   onError,
 }: {
   workspace: DashWorkspace;
-  hostLabel: string;
   theme: PluginTheme;
   scheme: ColorScheme;
   styles: RowStyles;
@@ -655,7 +660,7 @@ function MetaLine({
 
   entries.push({
     key: "host",
-    node: <MetaItem icon="Server" text={hostLabel} color={muted} styles={styles} />,
+    node: <MetaItem icon="Server" text={workspace.hostLabel} color={muted} styles={styles} />,
   });
 
   const pullRequest = workspace.pullRequest;

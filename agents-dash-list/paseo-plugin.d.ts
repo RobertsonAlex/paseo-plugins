@@ -177,8 +177,15 @@ declare module "@getpaseo/plugin/client" {
   interface PluginNavigableHostProps extends PluginHostProps {
     /** Client-owned navigation. Undefined on older hosts; hide dependent affordances when absent. */
     readonly navigation?: {
-      readonly openAgent: (input: { readonly agentId: string }) => void;
-      readonly openWorkspace: (input: { readonly workspaceId: string }) => void;
+      /** `serverId` targets another configured host; omitted, it means the surface's own host. */
+      readonly openAgent: (input: {
+        readonly agentId: string;
+        readonly serverId?: string;
+      }) => void;
+      readonly openWorkspace: (input: {
+        readonly workspaceId: string;
+        readonly serverId?: string;
+      }) => void;
     };
   }
 
@@ -405,6 +412,27 @@ declare module "@getpaseo/plugin/client" {
   ): (input: ZodInput<InputSchema>) => Promise<ZodOutput<OutputSchema>>;
 
   export function usePaseo(): PaseoApi;
+
+  /** One configured app host, including the ones that are currently disconnected. */
+  export interface PluginHostSummary {
+    readonly serverId: string;
+    readonly label: string;
+    readonly status: "idle" | "connecting" | "online" | "offline" | "error";
+  }
+
+  /**
+   * Every configured host, re-rendering when one connects, disconnects or is renamed. Added in
+   * Paseo 0.8; absent on older apps, so read it defensively.
+   */
+  export function useHosts(): readonly PluginHostSummary[];
+
+  /**
+   * Borrows an online host's API for this installation's lifetime. Throws when the host is
+   * unknown or disconnected, and the returned handle stops working once that connection is
+   * replaced, so call it again rather than holding on to one across reconnects. Added in
+   * Paseo 0.8; absent on older apps.
+   */
+  export function getPaseoClient(serverId: string): PaseoApi;
 
   export function useWorkspace<Selection>(
     workspaceId: string,

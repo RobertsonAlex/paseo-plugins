@@ -11,8 +11,9 @@ import {
 import { paseoHome } from "./paseo-home";
 
 /**
- * The dash's viewing preferences (project filter, folded groups). Plugins have no client-side
- * storage, so they live next to the unread marks under `$PASEO_HOME` and survive app restarts.
+ * The dash's viewing preferences (host filter, project filter, folded groups). Plugins have no
+ * client-side storage, so they live next to the unread marks under `$PASEO_HOME` and survive app
+ * restarts.
  */
 
 /** Reads and writes run in turn, so two quick changes cannot interleave their file writes. */
@@ -40,6 +41,7 @@ export function writeDashSettings(input: RpcInput<typeof setDashSettings>): Prom
   return enqueue(async () => {
     const settings: DashSettings = {
       projectIds: [...new Set(input.projectIds)],
+      hostIds: [...new Set(input.hostIds)],
       collapsedGroups: [...new Set(input.collapsedGroups)],
     };
     await persistSettings(settings);

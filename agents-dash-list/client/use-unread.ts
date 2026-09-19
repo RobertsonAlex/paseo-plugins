@@ -6,7 +6,10 @@ import type { UnreadMarks } from "../shared/contracts";
 import { listUnreadMarks, setUnreadMark } from "../shared/contracts";
 
 /**
- * The plugin's own "mark as unread" flags, stored per host by the server entry.
+ * The plugin's own "mark as unread" flags, kept by the server entry of the host the dash was
+ * opened on. That one store covers every host the dash shows — workspace ids are UUIDs, so the
+ * flat namespace holds — and the query is keyed by `hostId` because a different host means a
+ * different server entry and therefore a different store.
  *
  * `activeWorkspaceIds` only tells the server which marks may be pruned, so it is read from a ref
  * at fetch time rather than folded into the query key: the workspace directory changes constantly
