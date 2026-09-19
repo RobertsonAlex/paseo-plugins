@@ -1,6 +1,6 @@
 # chat-resume
 
-Adds two composer pills to agents whose latest state is a provider usage-limit / quota
+Adds composer pills to agents that stopped without finishing: a provider usage-limit / quota
 exhaustion — including Claude's "You've hit your monthly spend limit" assistant message,
 which leaves the agent idle instead of in `error`.
 
@@ -26,6 +26,21 @@ interrupted — is treated as quota-exhausted with no known renewal time, so it 
   a new agent with that prompt **in the same workspace**. It carries the source agent's labels plus
   `chat-resume.source-agent` set to the source agent ID.
 
+## Turns that stopped mid-work
+
+An agent can also go idle without finishing its turn and without saying why — the daemon
+restarted, the provider process exited, the machine went down. The plugin reads the tail of the
+agent's timeline (through the daemon, so it covers every provider, including ACP ones with no
+on-disk transcript) and treats a turn as unfinished when tool calls ran after the last thing the
+agent said, or when the page shows only work. Trailing thoughts, todo lists, and compactions do
+not count as work, since they routinely follow a finished turn.
+
+Such an agent gets a single **Continue** pill (`StepForward`) that asks it to review the
+conversation and the workspace state and pick the work back up. There is no **Handover** and no
+renewal schedule: nothing about the provider's allowance is known to be wrong. A quota stop
+always wins over this check, and an agent with a pending permission request is left alone —
+it is waiting for an answer, not stopped.
+
 `paseo.agents.create({ cwd })` always opens a new workspace; handover therefore uses
 `workspaces.ref(id).agents.create` so the new agent stays in the thread you are looking at.
 No agent is created until **Send** is pressed.
@@ -38,9 +53,12 @@ for the exhaustion state and reset time, including times such as `resets 12am (E
 
 - Pills appear when the latest idle or error state is a usage-limit / quota-exhaustion
   message, not for context-window overflows or other failures.
-- ACP providers that keep no on-disk transcript are detected only through `lastError` and, for
-  silent turns, the live turn-end event — a silent turn before a daemon restart is not detected.
+- ACP providers that keep no on-disk transcript are read through `lastError`, the live turn-end
+  event, and the daemon's timeline tail, which also carries a silent turn across a daemon restart.
 - A turn that ends silently for another reason also gets the pills.
+- A turn whose last tool call is cancelled reads as a deliberate interruption and gets no
+  **Continue**, so a turn cut short by a provider process exit mid-tool is missed.
+- A turn that legitimately ends on a tool call without a closing message reads as unfinished.
 - The handover prompt is edited in a plugin modal, not the native composer, and the app stays
   on the source agent after **Send**.
 

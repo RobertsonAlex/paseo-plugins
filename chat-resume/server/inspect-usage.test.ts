@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { latestTurnSilent, latestTurnText } from "./inspect-usage";
+import type { PaseoAgent } from "@getpaseo/client";
+import type { TurnTimelineItem } from "../shared/turn-state";
+import { inspectAgent, latestTurnSilent, latestTurnText } from "./inspect-usage";
 import { clearTranscriptCaches, latestTranscriptTurn, type TranscriptAgent } from "./transcript-tail";
 
 const CLAUDE_TEXT =
@@ -166,4 +168,76 @@ test("latestTurnSilent needs a user message with no activity after it", () => {
     ]),
     false,
   );
+});
+
+function idleAgent(overrides: Record<string, unknown> = {}): PaseoAgent {
+  return {
+    id: "agent-unfinished",
+    provider: "cursor",
+    cwd: "/chat-resume-test-missing",
+    workspaceId: "wks_1",
+    status: "idle",
+    updatedAt: "2026-09-19T06:51:30.334Z",
+    pendingPermissions: [],
+    persistence: { provider: "cursor", sessionId: "no-such-session" },
+    labels: {},
+    ...overrides,
+  } as unknown as PaseoAgent;
+}
+
+const workTail: TurnTimelineItem[] = [
+  { type: "user_message", text: "fix the bugs" },
+  { type: "assistant_message", text: "Looking now." },
+  { type: "tool_call", status: "completed" },
+  { type: "reasoning", text: "Running the tests." },
+];
+
+test("an idle agent whose turn stopped mid-work reads as unfinished", async () => {
+  const inspection = await inspectAgent(idleAgent(), async () => workTail);
+  assert.deepEqual(inspection, {
+    agentId: "agent-unfinished",
+    exhausted: false,
+    resetAt: null,
+    unfinished: true,
+  });
+});
+
+test("a turn that ended with an assistant message is left alone", async () => {
+  const spoken = [...workTail, { type: "assistant_message", text: "All five are fixed." }];
+  const inspection = await inspectAgent(idleAgent(), async () => spoken);
+  assert.equal(inspection.unfinished, false);
+  assert.equal(inspection.exhausted, false);
+});
+
+test("a quota stop wins over the unfinished check and never reads the timeline", async () => {
+  let reads = 0;
+  const inspection = await inspectAgent(
+    idleAgent({ lastError: "You've hit your usage limit. Try again in 2 hours." }),
+    async () => {
+      reads += 1;
+      return workTail;
+    },
+  );
+  assert.equal(inspection.exhausted, true);
+  assert.equal(inspection.unfinished, false);
+  assert.equal(reads, 0);
+});
+
+test("an agent waiting on a permission is not treated as stopped", async () => {
+  const inspection = await inspectAgent(
+    idleAgent({ pendingPermissions: [{ id: "perm_1" }] }),
+    async () => workTail,
+  );
+  assert.equal(inspection.unfinished, false);
+});
+
+test("a timeline that cannot be read leaves the agent alone", async () => {
+  const inspection = await inspectAgent(idleAgent(), async () => null);
+  assert.equal(inspection.unfinished, false);
+  assert.equal(inspection.exhausted, false);
+});
+
+test("a running agent is never unfinished", async () => {
+  const inspection = await inspectAgent(idleAgent({ status: "running" }), async () => workTail);
+  assert.equal(inspection.unfinished, false);
 });

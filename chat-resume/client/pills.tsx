@@ -2,6 +2,7 @@ import { type PluginClientContext } from "@getpaseo/plugin/client";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import { inspectUsageRpc, scheduleResumeRpc } from "../shared/contracts";
 import { HANDOVER_SOURCE_LABEL } from "../shared/handover";
+import { UNFINISHED_PROMPT } from "../shared/turn-state";
 import { CONTINUE_PROMPT, resumeAction, type ResumeAction } from "../shared/usage";
 import { HandoverModal } from "./handover-modal";
 import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
@@ -25,7 +26,25 @@ interface AgentPills {
 interface UsageInspection {
   exhausted: boolean;
   resetAt: string | null;
+  unfinished: boolean;
 }
+
+/** What the resume pill offers: continue now, schedule one resume, or pick the work back up. */
+type ResumeMode = ResumeAction | "unfinished";
+
+const RESUME_PILL: Record<ResumeMode, { label: string; icon: string; prompt: string }> = {
+  continue: {
+    label: "Continue",
+    icon: "Play",
+    prompt: CONTINUE_PROMPT,
+  },
+  schedule: { label: "Resume when renewed", icon: "RotateCcw", prompt: "" },
+  unfinished: {
+    label: "Continue",
+    icon: "StepForward",
+    prompt: UNFINISHED_PROMPT,
+  },
+};
 
 function canShowPills(agent: PaseoAgent): boolean {
   return Boolean(agent.workspaceId) && !agent.archivedAt && (agent.status === "idle" || agent.status === "error");
@@ -82,40 +101,48 @@ export function contributePills(client: PluginClientContext) {
     );
   }
 
-  function registerResume(agent: PaseoAgent, action: ResumeAction, resetAt: Date | null) {
+  function resumeTitle(mode: ResumeMode, resetAt: Date | null): string {
+    if (mode === "schedule") {
+      return `Schedule one resume heartbeat for ${resetAt?.toLocaleString() ?? "renewal"}`;
+    }
+    if (mode === "unfinished") {
+      return "The last turn stopped before it finished \u2014 continue the unfinished work";
+    }
+    return "Continue now that the provider allowance should have renewed";
+  }
+
+  function registerResume(agent: PaseoAgent, mode: ResumeMode, resetAt: Date | null) {
     if (!agent.workspaceId || resumeScheduled.has(agent.id)) {
       removePill(agent.id, "resume");
       return;
     }
-    const signature = `${agent.workspaceId}:${action}:${resetAt?.toISOString() ?? "none"}`;
+    const signature = `${agent.workspaceId}:${mode}:${resetAt?.toISOString() ?? "none"}`;
     const existing = pills.get(agent.id)?.resume;
     if (existing?.signature === signature) return;
     removePill(agent.id, "resume");
 
-    const due = action === "continue";
+    const pill = RESUME_PILL[mode];
     const registration = client.addComposerPill({
-      id: "resume-after-renewal",
+      id: mode === "unfinished" ? "resume-unfinished-turn" : "resume-after-renewal",
       workspaceId: agent.workspaceId,
       agentId: agent.id,
       button: {
-        title: due
-          ? "Continue now that the provider allowance should have renewed"
-          : `Schedule one resume heartbeat for ${resetAt?.toLocaleString() ?? "renewal"}`,
-        icon: due ? "Play" : "RotateCcw",
-        label: due ? "Continue" : "Resume when renewed",
+        title: resumeTitle(mode, resetAt),
+        icon: pill.icon,
+        label: pill.label,
         behavior: {
           kind: "action",
           async onPress() {
             if (resumePending.has(agent.id)) return;
             resumePending.add(agent.id);
             try {
-              if (due) {
-                await client.paseo.agents.ref(agent.id).send(CONTINUE_PROMPT);
-                removeAll(agent.id);
-              } else {
+              if (mode === "schedule") {
                 await client.rpc(scheduleResumeRpc, { agentId: agent.id });
                 resumeScheduled.add(agent.id);
                 removePill(agent.id, "resume");
+              } else {
+                await client.paseo.agents.ref(agent.id).send(pill.prompt);
+                removeAll(agent.id);
               }
             } catch (error) {
               console.error("[chat-resume] could not resume", agent.id, error);
@@ -178,7 +205,14 @@ export function contributePills(client: PluginClientContext) {
     if (!inspection) return;
     if (!inspection.exhausted) {
       resumeScheduled.delete(agent.id);
-      removeAll(agent.id);
+      if (!inspection.unfinished) {
+        removeAll(agent.id);
+        return;
+      }
+      // A turn cut short mid-work: offer to pick it up, but not a handover or a renewal schedule.
+      removePill(agent.id, "handover");
+      registerResume(agent, "unfinished", null);
+      armFlip(agent.id, null);
       return;
     }
 
@@ -216,14 +250,24 @@ export function contributePills(client: PluginClientContext) {
         const batch = ids.slice(offset, offset + INSPECT_BATCH);
         const { inspections: rows } = await client.rpc(inspectUsageRpc, { agentIds: batch });
         for (const row of rows) {
-          inspections.set(row.agentId, { exhausted: row.exhausted, resetAt: row.resetAt });
+          inspections.set(row.agentId, {
+            exhausted: row.exhausted,
+            resetAt: row.resetAt,
+            unfinished: row.unfinished,
+          });
           const agent = agents.get(row.agentId);
           if (!agent) continue;
           if (inspectQueued.has(agent.id)) continue;
           sync(agent);
           const shouldRetry = pendingRetry.has(row.agentId);
           pendingRetry.delete(row.agentId);
-          if (!row.exhausted && shouldRetry && agent.status === "idle" && !retried.has(agent.id)) {
+          if (
+            !row.exhausted &&
+            !row.unfinished &&
+            shouldRetry &&
+            agent.status === "idle" &&
+            !retried.has(agent.id)
+          ) {
             const snapshot = agent;
             setTimeout(() => {
               const current = agents.get(snapshot.id);

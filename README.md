@@ -129,12 +129,14 @@ editor** in the Command Center. Settings live under
 
 ### Chat resume
 
-[`chat-resume`](./chat-resume) — pills on quota-exhausted agents: continue now if the allowance
-has already renewed, schedule one resume after renewal, or prepare an editable handover to
-Claude, Codex, Cursor, or another ready provider **in the same workspace**.
+[`chat-resume`](./chat-resume) — pills on agents that stopped without finishing: continue now if
+the allowance has already renewed, schedule one resume after renewal, or prepare an editable
+handover to Claude, Codex, Cursor, or another ready provider **in the same workspace**. An agent
+that went idle mid-turn — a daemon restart, a provider exit — gets a plain **Continue** instead.
 
 No settings screen, and no screenshot here: the pills appear when the latest idle or error
-state is a usage-limit / quota exhaustion, including when you reopen the thread later. The
+state is a usage-limit / quota exhaustion or an unfinished turn, including when you reopen the
+thread later. The
 handover draft is an agent panel; the new agent does not start until **Start agent** is pressed.
 
 ### Profile routing

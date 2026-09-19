@@ -1,9 +1,12 @@
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { classifyTurnTail, type TurnTimelineItem } from "../shared/turn-state";
 import { USAGE_NOTICE_MAX_CHARS, usageFromSources, type UsageMatch, type UsageSource } from "../shared/usage";
 import { latestTranscriptTurn, type TranscriptTurn } from "./transcript-tail";
 
 const INSPECT_CONCURRENCY = 8;
+/** Enough tail to reach the prompt of a short turn; a longer one is classified from its work alone. */
+const TIMELINE_TAIL_LIMIT = 60;
 
 const TURN_ACTIVITY = new Set<AgentTimelineItem["type"]>([
   "assistant_message",
@@ -18,7 +21,12 @@ export interface UsageInspection {
   agentId: string;
   exhausted: boolean;
   resetAt: string | null;
+  /** The turn stopped mid-work rather than on quota. Never true together with `exhausted`. */
+  unfinished: boolean;
 }
+
+/** Reads the tail of an agent's timeline, newest item last; null when it cannot be read. */
+export type TimelineTailReader = (agentId: string) => Promise<readonly TurnTimelineItem[] | null>;
 
 const turnOutput = new Map<string, { text: string; observedAt: string }>();
 /** Agents whose last turn ended (no transcript available) with nothing after the user message. */
@@ -88,14 +96,12 @@ function toInspection(agentId: string, match: UsageMatch): UsageInspection {
     agentId,
     exhausted: match.exhausted,
     resetAt: match.resetAt ? match.resetAt.toISOString() : null,
+    unfinished: false,
   };
 }
 
-export async function inspectAgent(agent: PaseoAgent): Promise<UsageInspection> {
+function quotaSources(agent: PaseoAgent, turn: TranscriptTurn | null): UsageSource[] {
   const errorText = agent.lastError ?? null;
-  const turn = await latestTranscriptTurn(agent);
-  const cached = turnOutput.get(agent.id);
-
   if (turn?.message) {
     const sources: UsageSource[] = [
       { text: turn.message.text, observedAt: turn.message.observedAt, maxChars: USAGE_NOTICE_MAX_CHARS },
@@ -103,18 +109,71 @@ export async function inspectAgent(agent: PaseoAgent): Promise<UsageInspection> 
     if (agent.status === "error" && errorText) {
       sources.push({ text: errorText, observedAt: agent.updatedAt });
     }
-    return toInspection(agent.id, usageFromSources(sources));
+    return sources;
   }
 
   const sources: UsageSource[] = [];
   if (errorText) sources.push({ text: errorText, observedAt: agent.updatedAt });
+  const cached = turnOutput.get(agent.id);
   if (cached) sources.push({ ...cached, maxChars: USAGE_NOTICE_MAX_CHARS });
-  const match = usageFromSources(sources);
+  return sources;
+}
+
+export async function inspectAgent(
+  agent: PaseoAgent,
+  readTimelineTail?: TimelineTailReader,
+): Promise<UsageInspection> {
+  const turn = await latestTranscriptTurn(agent);
+  const cached = turnOutput.get(agent.id);
+
+  const match = usageFromSources(quotaSources(agent, turn));
   if (match.exhausted || agent.status !== "idle") return toInspection(agent.id, match);
 
   // Some providers stop on quota without a word: an idle turn with no output at all counts as exhausted.
-  const silent = turn ? isSilentTranscript(turn, cached) : silentTurns.has(agent.id);
-  return { agentId: agent.id, exhausted: silent, resetAt: null };
+  if (!turn?.message) {
+    const silent = turn ? isSilentTranscript(turn, cached) : silentTurns.has(agent.id);
+    if (silent) return { agentId: agent.id, exhausted: true, resetAt: null, unfinished: false };
+  }
+
+  // A pending permission keeps the turn open: the agent is waiting for an answer, not stopped.
+  if (!readTimelineTail || (agent.pendingPermissions?.length ?? 0) > 0) {
+    return toInspection(agent.id, match);
+  }
+
+  // The turn may also have stopped mid-work — a daemon restart, a provider exit, a lost machine.
+  const state = classifyTurnTail((await readTimelineTail(agent.id)) ?? []);
+  if (state === "silent" && !turn?.message && !cached) {
+    return { agentId: agent.id, exhausted: true, resetAt: null, unfinished: false };
+  }
+  return { agentId: agent.id, exhausted: false, resetAt: null, unfinished: state === "unfinished" };
+}
+
+function toTurnItem(item: AgentTimelineItem): TurnTimelineItem {
+  const record = item as { type: string; text?: unknown; status?: unknown };
+  return {
+    type: record.type,
+    ...(typeof record.text === "string" ? { text: record.text } : {}),
+    ...(typeof record.status === "string" ? { status: record.status } : {}),
+  };
+}
+
+export function timelineTailReader(paseo: PaseoApi): TimelineTailReader {
+  return async (agentId) => {
+    try {
+      const page = await paseo.agents.ref(agentId).timeline.refetch({
+        direction: "tail",
+        limit: TIMELINE_TAIL_LIMIT,
+        projection: "projected",
+      });
+      if (page.error) return null;
+      return [...page.entries]
+        .sort((left, right) => left.seqStart - right.seqStart)
+        .map((entry) => toTurnItem(entry.item));
+    } catch (error) {
+      console.error("[chat-resume] could not read timeline", agentId, error);
+      return null;
+    }
+  };
 }
 
 async function mapPool<T, R>(items: readonly T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -135,15 +194,16 @@ export async function inspectAgents(
   input: { agentIds: string[] },
   context: { paseo: PaseoApi },
 ): Promise<{ inspections: UsageInspection[] }> {
+  const readTail = timelineTailReader(context.paseo);
   const inspections = await mapPool(input.agentIds, INSPECT_CONCURRENCY, async (agentId) => {
     try {
       const refreshed = await context.paseo.agents.ref(agentId).refresh();
       const agent = refreshed?.agent;
-      if (!agent) return { agentId, exhausted: false, resetAt: null };
-      return inspectAgent(agent);
+      if (!agent) return { agentId, exhausted: false, resetAt: null, unfinished: false };
+      return inspectAgent(agent, readTail);
     } catch (error) {
       console.error("[chat-resume] could not inspect agent", agentId, error);
-      return { agentId, exhausted: false, resetAt: null };
+      return { agentId, exhausted: false, resetAt: null, unfinished: false };
     }
   });
   return { inspections };
