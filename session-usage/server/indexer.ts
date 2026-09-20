@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import { UsageStore, type IndexChanges, type IndexedFile, type IndexedStore } from "./index-store";
@@ -11,6 +11,8 @@ import type { Session, Snapshot } from "../shared/schema";
 interface Source {
   path: string;
   provider: string;
+  /** Paseo provider ID that owns the source's directory; falls back to `provider`. */
+  providerId?: string;
   nativeId: string;
   parentId: string | null;
   kind: "main" | "subagent";
@@ -18,17 +20,21 @@ interface Source {
   size: number;
   mtimeMs: number;
 }
-interface FileSource extends Source { provider: "claude" | "codex" }
+interface FileSource extends Source { provider: "claude" | "codex"; providerId: string }
 interface Metadata {
   agents: Map<string, Agent>;
   workspaces: Map<string, Workspace>;
   projects: Map<string, Project>;
   providerLabels: Map<string, string>;
+  profiles: ProfileRoot[];
 }
+/** A Claude or Codex configuration directory owned by one Paseo provider, e.g. a second account. */
+export interface ProfileRoot { id: string; kind: "claude" | "codex"; root: string }
 interface Agent { id: string; nativeId: string; provider: string; workspaceId: string; cwd: string; title: string; archived: boolean; status: string; createdAt: string; model: string }
 interface Workspace { id: string; projectId: string; cwd: string; title: string; branch: string; labels: string[]; archived: boolean }
 interface Project { id: string; root: string; name: string; archived: boolean }
-export interface Roots { paseo: string; claude: string; codex: string; data: string; cursor: string[] }
+/** `profiles` overrides the provider profiles read from Paseo's config.json; tests set it, production leaves it undefined. */
+export interface Roots { paseo: string; claude: string; codex: string; data: string; cursor: string[]; profiles?: ProfileRoot[] }
 
 const PROVIDER_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", copilot: "Copilot", opencode: "OpenCode", pi: "Pi", omp: "Oh My Pi", kilo: "Kilo", devin: "Devin", cursor: "Cursor" };
 function providerLabel(metadata: Metadata, provider: string): string {
@@ -74,7 +80,7 @@ async function json(path: string, warnings: Set<string>): Promise<unknown> {
 }
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 export async function readMetadata(root: string, warnings: Set<string>): Promise<Metadata> {
-  const metadata: Metadata = { agents: new Map(), workspaces: new Map(), projects: new Map(), providerLabels: new Map() };
+  const metadata: Metadata = { agents: new Map(), workspaces: new Map(), projects: new Map(), providerLabels: new Map(), profiles: [] };
   const [projects, workspaces, config] = await Promise.all([json(join(root, "projects", "projects.json"), warnings), json(join(root, "projects", "workspaces.json"), warnings), json(join(root, "config.json"), warnings)]);
   for (const raw of array(projects)) {
     const p = object(raw);
@@ -86,10 +92,16 @@ export async function readMetadata(root: string, warnings: Set<string>): Promise
     const id = string(w.workspaceId);
     if (id) metadata.workspaces.set(id, { id, cwd: string(w.cwd), projectId: string(w.projectId), title: string(w.title) || string(w.displayName) || basename(string(w.cwd)), branch: string(w.branch), labels: array(w.labels).filter((label): label is string => typeof label === "string"), archived: Boolean(w.archivedAt) });
   }
-  // Only display labels are read from provider settings; commands and environment may hold credentials.
+  // Only display labels and the two configuration-directory variables are read from provider
+  // settings; commands and the rest of the environment may hold credentials.
   for (const [id, provider] of Object.entries(object(object(object(config).agents).providers))) {
     const label = string(object(provider).label).trim();
     if (label) metadata.providerLabels.set(id, label.slice(0, 80));
+    const env = object(object(provider).env);
+    const claudeRoot = string(env.CLAUDE_CONFIG_DIR).trim();
+    const codexRoot = string(env.CODEX_HOME).trim();
+    if (claudeRoot) metadata.profiles.push({ id, kind: "claude", root: expandHome(claudeRoot) });
+    if (codexRoot) metadata.profiles.push({ id, kind: "codex", root: expandHome(codexRoot) });
   }
   const directories = await entries(join(root, "agents"), warnings);
   for (const directory of directories) {
@@ -115,9 +127,45 @@ export async function readMetadata(root: string, warnings: Set<string>): Promise
   return metadata;
 }
 
-async function discover(roots: Roots, warnings: Set<string>, signal: AbortSignal): Promise<FileSource[]> {
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  return resolve(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+}
+async function physical(path: string): Promise<string> {
+  try { return await realpath(path); } catch { return resolve(path); }
+}
+/**
+ * Every Claude and Codex configuration directory to scan: the daemon's own defaults plus one per
+ * Paseo provider whose environment sets CLAUDE_CONFIG_DIR or CODEX_HOME (separate accounts). A
+ * profile that points at the default directory claims it, so a session is indexed once and
+ * attributed to that provider.
+ */
+export async function profileRoots(roots: Roots, profiles: ProfileRoot[]): Promise<ProfileRoot[]> {
+  const result: ProfileRoot[] = [];
+  const claimed = new Set<string>();
+  for (const profile of profiles) {
+    const key = `${profile.kind}:${await physical(profile.root)}`;
+    if (claimed.has(key)) continue;
+    claimed.add(key);
+    result.push(profile);
+  }
+  for (const [kind, root] of [["claude", roots.claude], ["codex", roots.codex]] as const) {
+    const key = `${kind}:${await physical(root)}`;
+    if (claimed.has(key)) continue;
+    claimed.add(key);
+    result.push({ id: kind, kind, root });
+  }
+  return result;
+}
+
+async function discover(roots: Roots, profiles: ProfileRoot[], warnings: Set<string>, signal: AbortSignal): Promise<FileSource[]> {
   const sources = new Map<string, FileSource>();
-  for (const [root, provider, archived] of [[join(roots.claude, "projects"), "claude", false], [join(roots.codex, "sessions"), "codex", false], [join(roots.codex, "archived_sessions"), "codex", true]] as const) {
+  const trees: [string, "claude" | "codex", string, boolean][] = [];
+  for (const profile of profiles) {
+    if (profile.kind === "claude") trees.push([join(profile.root, "projects"), "claude", profile.id, false]);
+    else trees.push([join(profile.root, "sessions"), "codex", profile.id, false], [join(profile.root, "archived_sessions"), "codex", profile.id, true]);
+  }
+  for (const [root, provider, providerId, archived] of trees) {
     const queue = [root];
     while (queue.length) {
       if (signal.aborted) throw new Error("Scan cancelled");
@@ -141,7 +189,7 @@ async function discover(roots: Roots, warnings: Set<string>, signal: AbortSignal
         }
         try {
           const info = await stat(path);
-          const source: FileSource = { path, nativeId, provider, archived, parentId, kind: parentId ? "subagent" : "main", size: info.size, mtimeMs: info.mtimeMs };
+          const source: FileSource = { path, nativeId, provider, providerId, archived, parentId, kind: parentId ? "subagent" : "main", size: info.size, mtimeMs: info.mtimeMs };
           const key = `${provider}:${nativeId}`;
           const previous = sources.get(key);
           // A copied/moved rollout in both trees is one session. Prefer the fullest copy.
@@ -156,18 +204,23 @@ async function discover(roots: Roots, warnings: Set<string>, signal: AbortSignal
 }
 
 function joinSession(source: Source, parsed: ParsedTranscript, metadata: Metadata): Session {
-  const key = `${source.provider}:${source.nativeId}`;
-  const agent = metadata.agents.get(key);
+  // A transcript found in a provider profile's directory belongs to that Paseo provider unless a
+  // Paseo agent recorded it under another ID (e.g. the base provider before profiles existed).
+  const candidates = [...new Set([source.providerId, source.provider].filter((id): id is string => Boolean(id)))];
+  const lookup = (nativeId: string) => { for (const id of candidates) { const agent = metadata.agents.get(`${id}:${nativeId}`); if (agent) return agent; } return undefined; };
+  const agent = lookup(source.nativeId);
   const parentId = source.parentId ?? parsed.parentId;
-  const parent = parentId ? metadata.agents.get(`${source.provider}:${parentId}`) : undefined;
+  const parent = parentId ? lookup(parentId) : undefined;
   const owner = agent ?? parent;
+  const provider = agent?.provider ?? parent?.provider ?? source.providerId ?? source.provider;
+  const key = `${provider}:${source.nativeId}`;
   const cwd = parsed.cwd || owner?.cwd || "";
   const workspace = metadata.workspaces.get(owner?.workspaceId ?? "") ?? [...metadata.workspaces.values()].filter((w) => cwd && resolve(w.cwd) === resolve(cwd)).sort((a, b) => Number(a.archived) - Number(b.archived))[0];
   const project = metadata.projects.get(workspace?.projectId ?? "") ?? [...metadata.projects.values()].filter((p) => p.root && cwd && (resolve(cwd) === resolve(p.root) || resolve(cwd).startsWith(`${resolve(p.root)}${sep}`))).sort((a, b) => b.root.length - a.root.length)[0];
-  const label = providerLabel(metadata, source.provider);
+  const label = providerLabel(metadata, provider);
   return {
-    id: key, nativeId: source.nativeId, provider: source.provider, providerLabel: label,
-    kind: parentId || parsed.isSubagent ? "subagent" : source.kind, parentId: parentId ? `${source.provider}:${parentId}` : null,
+    id: key, nativeId: source.nativeId, provider, providerLabel: label,
+    kind: parentId || parsed.isSubagent ? "subagent" : source.kind, parentId: parentId ? `${provider}:${parentId}` : null,
     title: agent?.title || parsed.title || `${label} ${source.nativeId.slice(-12)}`,
     agentId: agent?.id ?? null, workspaceId: workspace?.id ?? null, workspace: workspace?.title ?? "",
     projectId: project?.id ?? null, project: project?.name ?? "Outside Paseo / unknown project",
@@ -238,7 +291,9 @@ export class UsageIndex {
     this.load();
     const changes: IndexChanges = { files: new Map(), stores: new Map(), removedFiles: [], removedStores: [] };
     const warnings = new Set<string>();
-    const [metadata, sources] = await Promise.all([readMetadata(this.roots.paseo, warnings), discover(this.roots, warnings, this.controller.signal)]);
+    const metadata = await readMetadata(this.roots.paseo, warnings);
+    const profiles = await profileRoots(this.roots, this.roots.profiles ?? metadata.profiles);
+    const sources = await discover(this.roots, profiles, warnings, this.controller.signal);
     this.state = { ...this.state, total: sources.length };
     const sessions: Session[] = [];
     let next = 0;
@@ -267,7 +322,7 @@ export class UsageIndex {
     };
     await Promise.all(Array.from({ length: Math.min(4, sources.length) }, worker));
     if (this.controller.signal.aborted) throw new Error("Scan cancelled");
-    const readable = new Set(["claude", "codex"]);
+    const readable = new Set(["claude", "codex", ...profiles.map((profile) => profile.id)]);
     sessions.push(...await this.readStores(metadata, warnings, readable, changes));
     const seen = new Set(sessions.map((s) => s.id));
     for (const [key, agent] of metadata.agents) {

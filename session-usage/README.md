@@ -156,8 +156,8 @@ the provider accounts.
 
 | Source | Location |
 | --- | --- |
-| Claude | `$CLAUDE_CONFIG_DIR/projects/**/*.jsonl`, default `~/.claude/projects`, including nested `subagents` files |
-| Codex | `$CODEX_HOME/sessions/**/rollout-*.jsonl` and `$CODEX_HOME/archived_sessions/**/rollout-*.jsonl`, default `~/.codex` |
+| Claude | `<config dir>/projects/**/*.jsonl`, including nested `subagents` files, for every Claude configuration directory (see below); default `$CLAUDE_CONFIG_DIR` or `~/.claude` |
+| Codex | `<home>/sessions/**/rollout-*.jsonl` and `<home>/archived_sessions/**/rollout-*.jsonl` for every Codex home (see below); default `$CODEX_HOME` or `~/.codex` |
 | OpenCode, Kilo | `$XDG_DATA_HOME/opencode/opencode.db` and `$XDG_DATA_HOME/kilo/kilo.db`, default `~/.local/share`; only the `session`, `message`, and `part` tables |
 | Devin CLI | `$XDG_DATA_HOME/devin/cli/sessions.db`, default `~/.local/share`; only the `sessions` and `message_nodes` tables |
 | Cursor | `$CURSOR_CONFIG_DIR/{acp-sessions/*,chats/*/*}/store.db`; without it, both `$XDG_CONFIG_HOME/cursor` (default `~/.config/cursor`) and `~/.cursor`; only the `meta` and `blobs` tables |
@@ -165,6 +165,12 @@ the provider accounts.
 | Allowances | Paseo's provider usage report (`paseo.providers.listUsage`), which the daemon caches for five minutes; only window names, percentages, reset times, and plan labels are kept |
 | Index | Written by this plugin: `$PASEO_HOME/plugin-data/session-usage/index.sqlite`, or `$PASEO_SESSION_USAGE_DB` |
 
+- **Provider profiles (several accounts).** Paseo providers that extend Claude or Codex and set
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` in their `env` (for example `claude-work` and `claude-personal`)
+  each contribute their directory to the scan. Sessions found there are attributed to that provider
+  ID and label, so the Provider filter and charts separate the accounts. A profile that points at
+  the daemon's default directory claims it; only those two variables are read from a provider's
+  environment. Without profiles the daemon's own `CLAUDE_CONFIG_DIR` / `CODEX_HOME` defaults apply.
 - No transcript, registry, configuration, or provider state is changed. The only file written is
   the plugin's own index. Only metadata, numeric
   statistics, tool names and coverage notices are sent to the client. Message text, tool arguments,

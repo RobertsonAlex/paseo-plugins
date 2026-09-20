@@ -294,3 +294,37 @@ test("snapshots carry a content revision and omit sessions the caller already ha
     assert.equal(first.view(initial.revision).unchanged, undefined);
   } finally { first.dispose(); second.dispose(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("provider profiles from Paseo config add every CLAUDE_CONFIG_DIR and CODEX_HOME and attribute sessions to that provider", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-usage-profiles-"));
+  const roots = { paseo: join(root, "paseo"), claude: join(root, "claude"), codex: join(root, "codex"), data: join(root, "data"), cursor: [join(root, "cursor")] };
+  const index = new UsageIndex(roots);
+  try {
+    await save(join(roots.paseo, "config.json"), JSON.stringify({ agents: { providers: {
+      claude: { enabled: false }, codex: { enabled: false },
+      "claude-a1": { extends: "claude", label: "Claude Code A1", env: { CLAUDE_CONFIG_DIR: roots.claude, OPENAI_API_KEY: "SECRET_MUST_NOT_LEAK" } },
+      "claude-personal": { extends: "claude", label: "Claude Code Personal", env: { CLAUDE_CONFIG_DIR: join(root, "claude-personal") } },
+      "codex-personal": { extends: "codex", label: "Codex Personal", env: { CODEX_HOME: join(root, "codex-personal") } },
+    } } }));
+    const claude = (id: string, sessionId: string) => JSON.stringify({ type: "assistant", uuid: id, timestamp: "2026-09-01T12:00:00Z", sessionId, cwd: "/worktree", message: { id, model: "claude-opus-5", content: [{ type: "text", text: "PRIVATE_TRANSCRIPT_TEXT" }], usage: { input_tokens: 10, output_tokens: 5 } } }) + "\n";
+    await save(join(roots.claude, "projects", "-worktree", "a1.jsonl"), claude("r1", "a1"));
+    await save(join(root, "claude-personal", "projects", "-worktree", "p1.jsonl"), claude("r2", "p1"));
+    const codex = JSON.stringify({ timestamp: "2026-09-01T12:00:00Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 7, output_tokens: 3, cached_input_tokens: 0, reasoning_output_tokens: 0 }, last_token_usage: { input_tokens: 7, output_tokens: 3, cached_input_tokens: 0, reasoning_output_tokens: 0 } } } }) + "\n";
+    await save(join(roots.codex, "sessions", "2026", "09", "01", "rollout-2026-09-01T12-00-00-base.jsonl"), codex);
+    await save(join(root, "codex-personal", "sessions", "2026", "09", "01", "rollout-2026-09-01T12-00-00-pers.jsonl"), codex);
+    // A Paseo agent recorded under the profile provider links to the transcript in that profile's directory.
+    await save(join(roots.paseo, "agents", "bucket", "agent.json"), JSON.stringify({ id: "agent", provider: "claude-personal", cwd: "/worktree", workspaceId: "", title: "Personal agent", createdAt: "2026-09-01", persistence: { sessionId: "p1" } }));
+
+    index.snapshot(true);
+    const snapshot = await index.settled();
+    SnapshotSchema.parse(snapshot);
+    const byId = new Map(snapshot.sessions.map((s) => [s.id, s]));
+    assert.equal(byId.get("claude-a1:a1")?.providerLabel, "Claude Code A1", "the default directory is claimed by the profile that points at it");
+    assert.equal(byId.get("claude-personal:p1")?.providerLabel, "Claude Code Personal");
+    assert.equal(byId.get("claude-personal:p1")?.agentId, "agent");
+    assert.equal(byId.get("codex-personal:pers")?.providerLabel, "Codex Personal");
+    assert.equal(byId.get("codex:base")?.providerLabel, "Codex", "an unclaimed default directory keeps the base provider");
+    assert.equal(snapshot.sessions.length, 4);
+    assert.ok(!JSON.stringify(snapshot).includes("SECRET_MUST_NOT_LEAK"));
+  } finally { index.dispose(); await rm(root, { recursive: true, force: true }); }
+});
