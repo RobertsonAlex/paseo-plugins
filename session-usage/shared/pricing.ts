@@ -1,14 +1,16 @@
 import type { Metrics } from "./schema";
 
-/** Standard, short-context USD/1M token equivalents, checked 2026-09-07.
+/** Standard, short-context USD/1M token equivalents, checked 2026-09-23.
  * https://developers.openai.com/api/docs/pricing
  * https://platform.claude.com/docs/en/about-claude/pricing
  * Deliberately not a bill: excludes tier/region/long-context premiums and tool fees.
  */
-export const PRICING_DATE = "2026-09-07";
+export const PRICING_DATE = "2026-09-23";
 type Rates = readonly [input: number, read: number, write: number, write1h: number, output: number];
 const RATES: Record<string, Rates> = {
   "gpt-6-astra": [10, 1, 12.5, 12.5, 50],
+  "gpt-6-sol": [2, 0.2, 2.5, 2.5, 10],
+  "gpt-6-luna": [0.1, 0.01, 0.125, 0.125, 0.5],
   "gpt-5.6-sol": [4, 0.4, 5, 5, 20],
   "gpt-5.6-terra": [2, 0.2, 2.5, 2.5, 12],
   "gpt-5.6-luna": [0.2, 0.02, 0.25, 0.25, 1.2],
@@ -17,6 +19,7 @@ const RATES: Record<string, Rates> = {
   "claude-mythos-5-1": [10, 0.25, 12.5, 20, 50],
   "claude-fable-5": [10, 1, 12.5, 20, 50],
   "claude-mythos-5": [10, 1, 12.5, 20, 50],
+  "claude-opus-5-5": [4, 0.2, 5, 8, 20],
   "claude-opus-5": [5, 0.5, 6.25, 10, 25],
   "claude-opus-4-8": [5, 0.5, 6.25, 10, 25],
   "claude-opus-4-7": [5, 0.5, 6.25, 10, 25],

@@ -134,7 +134,7 @@ the missing coverage. Token totals cannot recover deleted requests or unrecorded
 
 ## Cost estimates
 
-The **Base API estimate** uses a fixed price table checked on **2026-09-07** against
+The **Base API estimate** uses a fixed price table checked on **2026-09-23** against
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing) and
 [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
 Each usage record is priced using its recorded model, including separate read/write rates and

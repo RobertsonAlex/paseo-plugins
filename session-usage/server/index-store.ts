@@ -12,8 +12,9 @@ import { loadSqlite, type StoreSession } from "./stores";
  * database from another version, or one SQLite reports as corrupt, is deleted and rebuilt.
  */
 
-/** Bump whenever parser or store reader output changes, so no stale shape is served. */
-export const INDEX_VERSION = 1;
+/** Bump whenever parser or store reader output changes, or shared/pricing.ts rates change (costs are
+ * stored per row), so no stale shape or estimate is served. */
+export const INDEX_VERSION = 2;
 const LOG_PREFIX = "[session-usage]";
 
 export interface IndexedFile { signature: string; parsed: ParsedTranscript }

@@ -29,7 +29,7 @@ export const METRICS: Record<DisplayMetric, { label: string; unit: Unit; descrip
   activeMs: { label: "Recorded turn time", unit: "ms", description: "Sum of recorded completed/aborted turn durations, attributed to completion day. OpenCode/Kilo turns run from the user message to its last completed reply. Unknown when not recorded." },
   durationMs: { label: "Session span", unit: "ms", description: "Lifetime from first to last transcript timestamp, including idle time. Always lifetime, even with a date filter." },
   reportedCostUsd: { label: "Reported cost", unit: "usd", description: "USD recorded by the provider: Claude result events or OpenCode/Kilo message costs. Usually absent in Claude transcripts; not inferred from subscription plans." },
-  estimatedCostUsd: { label: "Base API estimate", unit: "usd", description: "Token equivalent at standard short-context API prices dated 2026-09-07. Excludes premiums, tool fees, discounts, tax, and subscription billing. Unpriced models are unknown." },
+  estimatedCostUsd: { label: "Base API estimate", unit: "usd", description: "Token equivalent at standard short-context API prices dated 2026-09-23. Excludes premiums, tool fees, discounts, tax, and subscription billing. Unpriced models are unknown." },
   bytes: { label: "Transcript size", unit: "bytes", description: "Size of the selected transcript file on disk, or of the session's rows in a provider's SQLite store. Always lifetime, even with a date filter." },
 };
 export const DISPLAY_METRICS = Object.keys(METRICS) as DisplayMetric[];
