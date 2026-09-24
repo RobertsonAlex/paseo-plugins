@@ -1,13 +1,16 @@
+import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
+import { UsageStore, type IndexChanges, type IndexedFile, type IndexedStore } from "./index-store";
 import { paseoHome } from "./paseo-home";
 import { object, string, parseTranscript, type ParsedTranscript } from "./parser";
+import { readCursorStore, readDevinStore, readOpenCodeStore, readStore, type StoreReader, type StoreSession } from "./stores";
 import type { Session, Snapshot } from "../shared/schema";
 
 interface Source {
   path: string;
-  provider: "claude" | "codex";
+  provider: string;
   nativeId: string;
   parentId: string | null;
   kind: "main" | "subagent";
@@ -15,15 +18,45 @@ interface Source {
   size: number;
   mtimeMs: number;
 }
+interface FileSource extends Source { provider: "claude" | "codex" }
 interface Metadata {
   agents: Map<string, Agent>;
   workspaces: Map<string, Workspace>;
   projects: Map<string, Project>;
+  providerLabels: Map<string, string>;
 }
 interface Agent { id: string; nativeId: string; provider: string; workspaceId: string; cwd: string; title: string; archived: boolean; status: string; createdAt: string; model: string }
 interface Workspace { id: string; projectId: string; cwd: string; title: string; branch: string; labels: string[]; archived: boolean }
 interface Project { id: string; root: string; name: string; archived: boolean }
-export interface Roots { paseo: string; claude: string; codex: string }
+export interface Roots { paseo: string; claude: string; codex: string; data: string; cursor: string[] }
+
+const PROVIDER_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", copilot: "Copilot", opencode: "OpenCode", pi: "Pi", omp: "Oh My Pi", kilo: "Kilo", devin: "Devin", cursor: "Cursor" };
+function providerLabel(metadata: Metadata, provider: string): string {
+  return metadata.providerLabels.get(provider) ?? PROVIDER_LABELS[provider] ?? `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
+}
+/** SQLite session stores, grouped per provider with the provider ID Paseo uses by default. Cursor keeps one store per session. */
+async function sessionStores(roots: Roots, warnings: Set<string>): Promise<{ provider: string; paths: string[]; read: StoreReader }[]> {
+  const cursor: string[] = [];
+  for (const root of roots.cursor) {
+    for (const session of await entries(join(root, "acp-sessions"), warnings)) if (session.isDirectory()) cursor.push(join(root, "acp-sessions", session.name, "store.db"));
+    for (const workspace of await entries(join(root, "chats"), warnings)) {
+      if (!workspace.isDirectory()) continue;
+      for (const session of await entries(join(root, "chats", workspace.name), warnings)) if (session.isDirectory()) cursor.push(join(root, "chats", workspace.name, session.name, "store.db"));
+    }
+  }
+  return [
+    { provider: "opencode", paths: [join(roots.data, "opencode", "opencode.db")], read: readOpenCodeStore },
+    { provider: "kilo", paths: [join(roots.data, "kilo", "kilo.db")], read: readOpenCodeStore },
+    { provider: "devin", paths: [join(roots.data, "devin", "cli", "sessions.db")], read: readDevinStore },
+    { provider: "cursor", paths: cursor, read: readCursorStore },
+  ];
+}
+/** Cursor's config directory: CURSOR_CONFIG_DIR, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`. The daemon may not share the agent's XDG setting, so both defaults are read. */
+function cursorRoots(): string[] {
+  const configured = process.env.CURSOR_CONFIG_DIR?.trim();
+  if (configured) return [configured];
+  return [...new Set([join(process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config"), "cursor"), join(homedir(), ".cursor")])];
+}
 
 async function entries(path: string, warnings: Set<string>) {
   try { return await readdir(path, { withFileTypes: true }); }
@@ -41,8 +74,8 @@ async function json(path: string, warnings: Set<string>): Promise<unknown> {
 }
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 export async function readMetadata(root: string, warnings: Set<string>): Promise<Metadata> {
-  const metadata: Metadata = { agents: new Map(), workspaces: new Map(), projects: new Map() };
-  const [projects, workspaces] = await Promise.all([json(join(root, "projects", "projects.json"), warnings), json(join(root, "projects", "workspaces.json"), warnings)]);
+  const metadata: Metadata = { agents: new Map(), workspaces: new Map(), projects: new Map(), providerLabels: new Map() };
+  const [projects, workspaces, config] = await Promise.all([json(join(root, "projects", "projects.json"), warnings), json(join(root, "projects", "workspaces.json"), warnings), json(join(root, "config.json"), warnings)]);
   for (const raw of array(projects)) {
     const p = object(raw);
     const id = string(p.projectId);
@@ -53,6 +86,11 @@ export async function readMetadata(root: string, warnings: Set<string>): Promise
     const id = string(w.workspaceId);
     if (id) metadata.workspaces.set(id, { id, cwd: string(w.cwd), projectId: string(w.projectId), title: string(w.title) || string(w.displayName) || basename(string(w.cwd)), branch: string(w.branch), labels: array(w.labels).filter((label): label is string => typeof label === "string"), archived: Boolean(w.archivedAt) });
   }
+  // Only display labels are read from provider settings; commands and environment may hold credentials.
+  for (const [id, provider] of Object.entries(object(object(object(config).agents).providers))) {
+    const label = string(object(provider).label).trim();
+    if (label) metadata.providerLabels.set(id, label.slice(0, 80));
+  }
   const directories = await entries(join(root, "agents"), warnings);
   for (const directory of directories) {
     if (!directory.isDirectory()) continue;
@@ -60,14 +98,15 @@ export async function readMetadata(root: string, warnings: Set<string>): Promise
     for (const file of await entries(path, warnings)) {
       if (!file.isFile() || !file.name.endsWith(".json")) continue;
       const a = object(await json(join(path, file.name), warnings));
-      if (a.provider !== "claude" && a.provider !== "codex") continue;
+      const provider = string(a.provider);
+      if (!provider) continue;
       // Explicit allowlist: persistence.metadata contains credentials and is never retained.
       const p = object(a.persistence);
-      const nativeId = a.provider === "claude" ? string(p.sessionId) || string(p.nativeHandle) : string(p.nativeHandle) || string(p.sessionId);
+      const nativeId = provider === "codex" ? string(p.nativeHandle) || string(p.sessionId) : string(p.sessionId) || string(p.nativeHandle);
       const id = string(a.id);
       if (!id) continue;
-      const key = `${a.provider}:${nativeId || `missing:${id}`}`;
-      const value: Agent = { id, nativeId, provider: a.provider, cwd: string(a.cwd), workspaceId: string(a.workspaceId), title: string(a.title), archived: Boolean(a.archivedAt), status: string(a.lastStatus) || "unknown", createdAt: string(a.createdAt), model: string(object(a.runtimeInfo).model) || string(object(a.config).model) };
+      const key = `${provider}:${nativeId || `missing:${id}`}`;
+      const value: Agent = { id, nativeId, provider, cwd: string(a.cwd), workspaceId: string(a.workspaceId), title: string(a.title), archived: Boolean(a.archivedAt), status: string(a.lastStatus) || "unknown", createdAt: string(a.createdAt), model: string(object(a.runtimeInfo).model) || string(object(a.config).model) };
       // Resuming the same provider session in multiple Paseo records must not multiply usage.
       const previous = metadata.agents.get(key);
       if (!previous || (previous.archived && !value.archived) || (previous.archived === value.archived && value.createdAt > previous.createdAt)) metadata.agents.set(key, value);
@@ -76,8 +115,8 @@ export async function readMetadata(root: string, warnings: Set<string>): Promise
   return metadata;
 }
 
-async function discover(roots: Roots, warnings: Set<string>, signal: AbortSignal): Promise<Source[]> {
-  const sources = new Map<string, Source>();
+async function discover(roots: Roots, warnings: Set<string>, signal: AbortSignal): Promise<FileSource[]> {
+  const sources = new Map<string, FileSource>();
   for (const [root, provider, archived] of [[join(roots.claude, "projects"), "claude", false], [join(roots.codex, "sessions"), "codex", false], [join(roots.codex, "archived_sessions"), "codex", true]] as const) {
     const queue = [root];
     while (queue.length) {
@@ -102,7 +141,7 @@ async function discover(roots: Roots, warnings: Set<string>, signal: AbortSignal
         }
         try {
           const info = await stat(path);
-          const source: Source = { path, nativeId, provider, archived, parentId, kind: parentId ? "subagent" : "main", size: info.size, mtimeMs: info.mtimeMs };
+          const source: FileSource = { path, nativeId, provider, archived, parentId, kind: parentId ? "subagent" : "main", size: info.size, mtimeMs: info.mtimeMs };
           const key = `${provider}:${nativeId}`;
           const previous = sources.get(key);
           // A copied/moved rollout in both trees is one session. Prefer the fullest copy.
@@ -125,10 +164,11 @@ function joinSession(source: Source, parsed: ParsedTranscript, metadata: Metadat
   const cwd = parsed.cwd || owner?.cwd || "";
   const workspace = metadata.workspaces.get(owner?.workspaceId ?? "") ?? [...metadata.workspaces.values()].filter((w) => cwd && resolve(w.cwd) === resolve(cwd)).sort((a, b) => Number(a.archived) - Number(b.archived))[0];
   const project = metadata.projects.get(workspace?.projectId ?? "") ?? [...metadata.projects.values()].filter((p) => p.root && cwd && (resolve(cwd) === resolve(p.root) || resolve(cwd).startsWith(`${resolve(p.root)}${sep}`))).sort((a, b) => b.root.length - a.root.length)[0];
+  const label = providerLabel(metadata, source.provider);
   return {
-    id: key, nativeId: source.nativeId, provider: source.provider,
+    id: key, nativeId: source.nativeId, provider: source.provider, providerLabel: label,
     kind: parentId || parsed.isSubagent ? "subagent" : source.kind, parentId: parentId ? `${source.provider}:${parentId}` : null,
-    title: agent?.title || parsed.title || `${source.provider === "claude" ? "Claude" : "Codex"} ${source.nativeId.slice(-12)}`,
+    title: agent?.title || parsed.title || `${label} ${source.nativeId.slice(-12)}`,
     agentId: agent?.id ?? null, workspaceId: workspace?.id ?? null, workspace: workspace?.title ?? "",
     projectId: project?.id ?? null, project: project?.name ?? "Outside Paseo / unknown project",
     cwd, branch: workspace?.branch || parsed.branch, labels: workspace?.labels ?? [],
@@ -138,14 +178,25 @@ function joinSession(source: Source, parsed: ParsedTranscript, metadata: Metadat
   };
 }
 
-/** One background scan per installation, four streams at once, size/mtime cache in memory only. */
+export function defaultRoots(): Roots {
+  return { paseo: paseoHome(), claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), codex: process.env.CODEX_HOME ?? join(homedir(), ".codex"), data: process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), cursor: cursorRoots() };
+}
+
+/**
+ * One background scan per installation, four streams at once. Parse results are cached by
+ * size/mtime (stores: database and WAL) in memory and, given a database path, in a persistent
+ * index, so only new or changed sources are read after a restart.
+ */
 export class UsageIndex {
-  private cache = new Map<string, { size: number; mtimeMs: number; parsed: ParsedTranscript }>();
-  private state: Snapshot = { sessions: [], scanning: false, completed: 0, total: 0, generatedAt: null, warnings: [] };
+  private cache = new Map<string, IndexedFile>();
+  private storeCache = new Map<string, IndexedStore>();
+  private store: UsageStore | null = null;
+  private loaded = false;
+  private state: Snapshot = { sessions: [], scanning: false, completed: 0, total: 0, generatedAt: null, warnings: [], revision: "" };
   private controller = new AbortController();
   private running: Promise<void> | null = null;
   private lastScan = 0;
-  constructor(private roots: Roots = { paseo: paseoHome(), claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), codex: process.env.CODEX_HOME ?? join(homedir(), ".codex") }) {}
+  constructor(private roots: Roots = defaultRoots(), private databasePath: string | null = null) {}
 
   snapshot(refresh = false): Snapshot {
     if (!this.controller.signal.aborted && !this.running && (refresh || !this.lastScan || Date.now() - this.lastScan > 30_000)) {
@@ -157,9 +208,35 @@ export class UsageIndex {
     return this.state;
   }
   async settled(): Promise<Snapshot> { await this.running; return this.state; }
-  dispose(): void { this.controller.abort(); this.cache.clear(); this.state.sessions = []; }
+  /** Waits up to `timeoutMs` for the first scan, which is quick when the persistent index is warm. */
+  async firstScan(timeoutMs: number): Promise<void> {
+    if (this.state.generatedAt || !this.running) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.running, new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+    clearTimeout(timer);
+  }
+  /** The current state, without sessions when the caller already has this revision. */
+  view(revision?: string): Snapshot {
+    return revision && revision === this.state.revision ? { ...this.state, sessions: [], unchanged: true } : this.state;
+  }
+  dispose(): void { this.controller.abort(); this.store?.close(); this.store = null; this.cache.clear(); this.storeCache.clear(); this.state.sessions = []; }
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (!this.databasePath) return;
+    this.store = UsageStore.open(this.databasePath);
+    if (!this.store) return;
+    try {
+      const contents = this.store.load();
+      this.cache = contents.files;
+      this.storeCache = contents.stores;
+    } catch (error) { console.warn(`[session-usage] cannot load usage index: ${error instanceof Error ? error.message : String(error)}`); }
+  }
 
   private async scan(): Promise<void> {
+    this.load();
+    const changes: IndexChanges = { files: new Map(), stores: new Map(), removedFiles: [], removedStores: [] };
     const warnings = new Set<string>();
     const [metadata, sources] = await Promise.all([readMetadata(this.roots.paseo, warnings), discover(this.roots, warnings, this.controller.signal)]);
     this.state = { ...this.state, total: sources.length };
@@ -171,10 +248,14 @@ export class UsageIndex {
         if (this.controller.signal.aborted) throw new Error("Scan cancelled");
         const source = sources[next++];
         try {
-          const cached = this.cache.get(source.path);
-          const parsed = cached?.size === source.size && cached.mtimeMs === source.mtimeMs ? cached.parsed : await parseTranscript(source.path, source.provider, this.controller.signal);
-          this.cache.set(source.path, { size: source.size, mtimeMs: source.mtimeMs, parsed });
-          sessions.push(joinSession(source, parsed, metadata));
+          const signature = `${source.size}:${source.mtimeMs}`;
+          let entry = this.cache.get(source.path);
+          if (entry?.signature !== signature) {
+            entry = { signature, parsed: await parseTranscript(source.path, source.provider, this.controller.signal) };
+            this.cache.set(source.path, entry);
+            changes.files.set(source.path, entry);
+          }
+          sessions.push(joinSession(source, entry.parsed, metadata));
         } catch {
           if (this.controller.signal.aborted) return;
           const session = joinSession(source, { nativeId: source.nativeId, parentId: source.parentId, cwd: "", title: "", branch: "", startedAt: null, endedAt: null, buckets: [], warnings: ["Transcript could not be read."] }, metadata);
@@ -186,15 +267,88 @@ export class UsageIndex {
     };
     await Promise.all(Array.from({ length: Math.min(4, sources.length) }, worker));
     if (this.controller.signal.aborted) throw new Error("Scan cancelled");
+    const readable = new Set(["claude", "codex"]);
+    sessions.push(...await this.readStores(metadata, warnings, readable, changes));
     const seen = new Set(sessions.map((s) => s.id));
     for (const [key, agent] of metadata.agents) {
       if (seen.has(key)) continue;
-      const source: Source = { nativeId: agent.nativeId || `missing:${agent.id}`, provider: agent.provider as "claude" | "codex", parentId: null, kind: "main", path: "", size: 0, mtimeMs: 0, archived: agent.archived };
-      const session = joinSession(source, { nativeId: source.nativeId, parentId: null, cwd: agent.cwd, title: agent.title, branch: "", startedAt: agent.createdAt || null, endedAt: null, buckets: [], warnings: [agent.nativeId ? "Transcript is missing from the provider directories." : "Agent has no recorded provider session."] }, metadata);
+      const source: Source = { nativeId: agent.nativeId || `missing:${agent.id}`, provider: agent.provider, parentId: null, kind: "main", path: "", size: 0, mtimeMs: 0, archived: agent.archived };
+      const warning = !agent.nativeId ? "Agent has no recorded provider session." : readable.has(agent.provider) ? "Transcript is missing from the provider's local records." : "This provider keeps no local usage records that Session usage can read.";
+      const session = joinSession(source, { nativeId: source.nativeId, parentId: null, cwd: agent.cwd, title: agent.title, branch: "", startedAt: agent.createdAt || null, endedAt: null, buckets: [], warnings: [warning] }, metadata);
       session.coverage = "missing";
       sessions.push(session);
     }
-    for (const path of this.cache.keys()) if (!livePaths.has(path)) this.cache.delete(path);
-    this.state = { sessions: sessions.sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? "")), scanning: false, completed: sources.length, total: sources.length, generatedAt: new Date().toISOString(), warnings: [...warnings] };
+    for (const path of this.cache.keys()) if (!livePaths.has(path)) { this.cache.delete(path); changes.removedFiles.push(path); }
+    this.persist(changes);
+    sessions.sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? "") || a.id.localeCompare(b.id));
+    const revision = createHash("sha256").update(JSON.stringify(sessions)).digest("base64url").slice(0, 22);
+    this.state = { sessions: revision === this.state.revision ? this.state.sessions : sessions, scanning: false, completed: sources.length, total: sources.length, generatedAt: new Date().toISOString(), warnings: [...warnings], revision };
+  }
+
+  private persist(changes: IndexChanges): void {
+    if (!this.store || this.controller.signal.aborted) return;
+    if (!changes.files.size && !changes.stores.size && !changes.removedFiles.length && !changes.removedStores.length) return;
+    try { this.store.save(changes); }
+    catch (error) { console.warn(`[session-usage] cannot update usage index: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /** Each store is reread only when its database or WAL file changes. Adds the provider IDs it resolves to `readable`. */
+  private async readStores(metadata: Metadata, warnings: Set<string>, readable: Set<string>, changes: IndexChanges): Promise<Session[]> {
+    const sessions: Session[] = [];
+    const agentsByNativeId = new Map<string, Agent>();
+    for (const agent of metadata.agents.values()) if (agent.nativeId && agent.provider !== "claude" && agent.provider !== "codex") agentsByNativeId.set(agent.nativeId, agent);
+    const live = new Set<string>();
+    for (const group of await sessionStores(this.roots, warnings)) {
+      // A session copied into several stores counts once, from its largest copy.
+      const stored = new Map<string, { path: string; session: StoreSession }>();
+      let found = false;
+      for (const path of group.paths) {
+        if (this.controller.signal.aborted) throw new Error("Scan cancelled");
+        live.add(path);
+        let signature: string, mtimeMs: number;
+        try {
+          const [database, wal] = await Promise.all([stat(path), stat(`${path}-wal`).catch(() => null)]);
+          signature = `${database.size}:${database.mtimeMs}:${wal?.size ?? 0}:${wal?.mtimeMs ?? 0}`;
+          mtimeMs = Math.max(database.mtimeMs, wal?.mtimeMs ?? 0);
+        } catch (error) {
+          if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) warnings.add(`Cannot read session store: ${path}`);
+          if (this.storeCache.delete(path)) changes.removedStores.push(path);
+          continue;
+        }
+        let cached = this.storeCache.get(path);
+        if (cached?.signature !== signature) {
+          try {
+            cached = { signature, sessions: readStore(path, group.read, { mtimeMs }) };
+            this.storeCache.set(path, cached);
+            changes.stores.set(path, cached);
+          } catch { warnings.add(`Cannot read session store: ${path}`); }
+        }
+        if (!cached) continue;
+        found = true;
+        for (const session of cached.sessions) {
+          const previous = stored.get(session.nativeId);
+          if (!previous || previous.session.bytes < session.bytes) stored.set(session.nativeId, { path, session });
+        }
+      }
+      if (!found) continue;
+      // Custom provider IDs are user-chosen, so unlinked sessions take the ID most linked sessions use.
+      const linked = new Map<string, number>();
+      for (const { session } of stored.values()) {
+        const provider = agentsByNativeId.get(session.nativeId)?.provider;
+        if (provider) linked.set(provider, (linked.get(provider) ?? 0) + 1);
+      }
+      const storeProvider = [...linked].sort((a, b) => b[1] - a[1])[0]?.[0] ?? group.provider;
+      readable.add(storeProvider);
+      for (const { path, session } of stored.values()) {
+        const agent = agentsByNativeId.get(session.nativeId);
+        // Sessions without messages are skipped unless a Paseo agent owns them.
+        if (!session.messages && !agent) continue;
+        const provider = agent?.provider ?? storeProvider;
+        readable.add(provider);
+        sessions.push(joinSession({ path, provider, nativeId: session.nativeId, parentId: session.parentId, kind: session.parentId ? "subagent" : "main", archived: session.archived, size: session.bytes, mtimeMs: 0 }, session.parsed, metadata));
+      }
+    }
+    for (const path of this.storeCache.keys()) if (!live.has(path)) { this.storeCache.delete(path); changes.removedStores.push(path); }
+    return sessions;
   }
 }

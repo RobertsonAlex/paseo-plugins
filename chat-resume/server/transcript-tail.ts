@@ -218,46 +218,93 @@ function textParts(content: unknown): string {
   return parts.join("\n");
 }
 
-function extractClaude(record: Record<string, unknown>): TranscriptMessage | null {
+/** A transcript record classified for the latest turn. */
+type TurnRecord =
+  | { kind: "message"; message: TranscriptMessage }
+  | { kind: "activity" }
+  | { kind: "ended" }
+  /** `needsEnd`: the provider writes an end record, so a prompt without one is a turn still running. */
+  | { kind: "prompt"; observedAt: string; needsEnd: boolean }
+  | { kind: "aborted" };
+
+export interface TranscriptTurn {
+  /** Last spoken assistant (or provider error) message of the latest turn. */
+  message: TranscriptMessage | null;
+  /** Start of the latest turn when it produced no output at all. */
+  silentSince: string | null;
+}
+
+function messageRecord(text: string, timestamp: string | null): TurnRecord {
+  if (!text) return { kind: "activity" };
+  return { kind: "message", message: { text, observedAt: timestamp ?? new Date().toISOString() } };
+}
+
+function promptRecord(text: string, timestamp: string | null): TurnRecord | null {
+  const trimmed = text.trim();
+  if (!trimmed || /^<(?:command-|local-command-)/.test(trimmed)) return null;
+  if (trimmed.startsWith("[Request interrupted")) return { kind: "aborted" };
+  return { kind: "prompt", observedAt: timestamp ?? new Date().toISOString(), needsEnd: false };
+}
+
+function classifyClaude(record: Record<string, unknown>): TurnRecord | null {
   const timestamp = asString(record.timestamp);
   if (record.type === "assistant" && isRecord(record.message)) {
-    const text = textParts(record.message.content).trim();
-    if (text) return { text, observedAt: timestamp ?? new Date().toISOString() };
+    return messageRecord(textParts(record.message.content).trim(), timestamp);
   }
   if (record.type === "result" && (record.is_error === true || record.isError === true)) {
     const text = (asString(record.result) ?? asString(record.error) ?? "").trim();
-    if (text) return { text, observedAt: timestamp ?? new Date().toISOString() };
+    return text ? messageRecord(text, timestamp) : null;
+  }
+  if (record.type === "user" && isRecord(record.message) && record.isMeta !== true && record.isCompactSummary !== true) {
+    const content = record.message.content;
+    if (Array.isArray(content) && content.some((part) => isRecord(part) && part.type === "tool_result")) {
+      return { kind: "activity" };
+    }
+    return promptRecord(textParts(content), timestamp);
   }
   return null;
 }
 
-function extractCodex(record: Record<string, unknown>): TranscriptMessage | null {
+function classifyCodex(record: Record<string, unknown>): TurnRecord | null {
   const timestamp = asString(record.timestamp);
   const payload = isRecord(record.payload) ? record.payload : null;
   if (!payload) return null;
   const payloadType = asString(payload.type);
-  if (record.type === "response_item" && payloadType === "message" && asString(payload.role) === "assistant") {
-    const text = textParts(payload.content).trim();
-    if (text) return { text, observedAt: timestamp ?? new Date().toISOString() };
+  if (record.type === "response_item") {
+    if (payloadType !== "message") return { kind: "activity" };
+    if (asString(payload.role) !== "assistant") return null;
+    return messageRecord(textParts(payload.content).trim(), timestamp);
   }
-  if (record.type === "event_msg" && payloadType === "agent_message") {
-    const text = (asString(payload.message) ?? "").trim();
-    if (text) return { text, observedAt: timestamp ?? new Date().toISOString() };
+  if (record.type !== "event_msg") return null;
+  switch (payloadType) {
+    case "agent_message": {
+      const text = (asString(payload.message) ?? "").trim();
+      return text ? messageRecord(text, timestamp) : null;
+    }
+    case "task_complete": {
+      // A quota stop ends the turn with no agent message and the provider error on this record.
+      const text = isRecord(payload.error) ? (asString(payload.error.message) ?? "").trim() : "";
+      return text ? messageRecord(text, timestamp) : { kind: "ended" };
+    }
+    case "task_started":
+      return { kind: "prompt", observedAt: timestamp ?? new Date().toISOString(), needsEnd: true };
+    case "turn_aborted":
+      return { kind: "aborted" };
+    default:
+      return null;
   }
-  return null;
 }
 
-function extractGeneric(record: Record<string, unknown>): TranscriptMessage | null {
+function classifyGeneric(record: Record<string, unknown>): TurnRecord | null {
   const timestamp = asString(record.timestamp);
   const message = isRecord(record.message) ? record.message : record;
   const role = asString(message.role) ?? asString(record.role) ?? asString(record.type);
-  if (role !== "assistant") return null;
-  const text = textParts(message.content ?? message.text ?? record.text).trim();
-  if (!text) return null;
-  return { text, observedAt: timestamp ?? new Date().toISOString() };
+  const text = textParts(message.content ?? message.text ?? record.text);
+  if (role === "user") return promptRecord(text, timestamp);
+  return role === "assistant" ? messageRecord(text.trim(), timestamp) : null;
 }
 
-function extractMessage(raw: string, provider: string): TranscriptMessage | null {
+function classifyRecord(raw: string, provider: string): TurnRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -265,9 +312,9 @@ function extractMessage(raw: string, provider: string): TranscriptMessage | null
     return null;
   }
   if (!isRecord(parsed)) return null;
-  if (provider === "claude") return extractClaude(parsed);
-  if (provider === "codex") return extractCodex(parsed);
-  return extractClaude(parsed) ?? extractCodex(parsed) ?? extractGeneric(parsed);
+  if (provider === "claude") return classifyClaude(parsed);
+  if (provider === "codex") return classifyCodex(parsed);
+  return classifyClaude(parsed) ?? classifyCodex(parsed) ?? classifyGeneric(parsed);
 }
 
 async function readTailLines(path: string): Promise<string[]> {
@@ -285,20 +332,35 @@ async function readTailLines(path: string): Promise<string[]> {
   }
 }
 
-/** Last spoken assistant (or provider error) message in the agent's on-disk transcript. */
-export async function lastAssistantMessage(agent: TranscriptAgent): Promise<TranscriptMessage | null> {
+/**
+ * The latest turn in the agent's on-disk transcript, scanned back to its prompt; null when there is
+ * no readable transcript. Tool calls, reasoning, and interruptions make a turn neither spoken nor silent.
+ */
+export async function latestTranscriptTurn(agent: TranscriptAgent): Promise<TranscriptTurn | null> {
   const path = await resolveTranscriptPath(agent);
   if (!path) return null;
+  const turn: TranscriptTurn = { message: null, silentSince: null };
   try {
     const lines = await readTailLines(path);
+    let active = false;
+    let ended = false;
     for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const message = extractMessage(lines[index] ?? "", agent.provider);
-      if (message) return message;
+      const record = classifyRecord(lines[index] ?? "", agent.provider);
+      if (!record) continue;
+      if (record.kind === "message") return { message: record.message, silentSince: null };
+      if (record.kind === "activity") active = true;
+      else if (record.kind === "ended") ended = true;
+      else if (record.kind === "aborted") return turn;
+      else {
+        const silent = !active && (ended || !record.needsEnd);
+        return silent ? { message: null, silentSince: record.observedAt } : turn;
+      }
     }
+    return turn;
   } catch (error) {
     if (!isMissing(error)) {
       console.error("[chat-resume] could not read transcript", path, error);
     }
+    return null;
   }
-  return null;
 }

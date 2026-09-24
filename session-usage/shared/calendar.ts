@@ -34,7 +34,7 @@ export function calendarActivity(sessions: Session[], filters: Filters, metric: 
   const days = new Map<string, CalendarValue>();
   const lifetime = metric === "durationMs" || metric === "bytes";
   for (const group of chartGroups(rows, "day")) {
-    const result = aggregate([...group.claude, ...group.codex], metric, average);
+    const result = aggregate(group.rows, metric, average);
     days.set(group.id, { ...result, value: lifetime ? null : result.value, intensity: 0 });
   }
   let max = 0;

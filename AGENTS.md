@@ -16,8 +16,11 @@ Current plugins:
 - `agent-heartbeats`: adds a compact heartbeat-count composer pill and an agent-scoped panel for
   listing, creating, editing, and deleting heartbeats.
 - `agents-dash-list`: adds an "Agents dash" sidebar surface that lists workspaces and their agents
-  grouped by status (waiting, unread, in progress, failing, approved, idle, closed), with quick
-  archive and mark-as-unread actions.
+  from every configured host in one feed, grouped by status (waiting, unread, in progress, failing,
+  approved, idle, closed), with a host filter, per-row host labels, and quick archive and
+  mark-as-unread actions. Reads other hosts through `useHosts` / `getPaseoClient`; its own RPCs
+  (project icons, label catalog, unread marks, settings) still only run on the host it was opened
+  on, because plugin RPC has no cross-host form.
 - `agents-history`: adds an "Agents history" sidebar surface that lists every workspace and agent,
   archived ones included, with archived/provider/project/period filters and a search that ranks the
   providers' on-disk conversation transcripts through a SQLite FTS5 index (names, titles, branches,
@@ -27,14 +30,31 @@ Current plugins:
   and opens a link template; includes a native plugin settings screen.
 - `chat-resume`: adds pills that continue a quota-exhausted chat now, schedule one resume
   after provider allowance renewal, or prepare an editable handover to another ready provider.
+  Also offers a plain continue for an agent that went idle mid-turn — a daemon restart or a
+  provider exit — read from the tail of its timeline.
 - `schedule-runs`: adds a "Schedule runs" sidebar surface that lists every run of every schedule
   with status, workspace, agent, archived state, and final response, filterable by schedule,
   status, archived state, and keyword. Reads daemon state from disk; makes no schedule changes.
-- `session-usage`: reads active and archived Claude/Codex transcripts and Paseo metadata, with a
+- `session-usage`: reads active and archived Claude/Codex transcripts, OpenCode/Kilo/Devin CLI/Cursor
+  session stores, and Paseo metadata for every provider in use, with a
   sortable statistics table, filtered provider charts, token/cache accounting, cost estimates,
-  session details, and CSV export. Reads local files; changes no provider or daemon state.
+  session details, and CSV export. Subscription allowance cards pair Paseo's
+  `providers.listUsage` limits with clickable hourly/daily token charts and a pace projection.
+  Reads local files; writes only its own SQLite index under `$PASEO_HOME/plugin-data`; changes no
+  provider or daemon state.
+- `skills-usage`: adds a "Skills" composer pill whose popover lists the skills available to the
+  agent, groups the ones already loaded in this chat on top with a used badge and count, offers a
+  search, marks each skill's location (user, project, project-local, plugin, built-in) with an
+  icon, and inserts `/skill-name` into the composer. Reads the provider command list and the agent
+  timeline through the SDK; the server entry scans skill directories and runs `git ls-files`.
 - `vscode-open-remote`: adds a remote-editor pill, editor settings, desktop URI handling, and tablet
   `vscode.dev` support. It intentionally hides the pill on phones.
+- `profile-routing`: a provider plugin with a settings screen. An agent on a configured model
+  (default `profile-routing/claude`) runs that model's shell script with `EFFORT` from the thinking
+  option, creates a delegate from the JSON it prints in the same workspace, and either relays that
+  answer or detaches/handoffs. Routing notes link to the delegate; the router auto-archives when
+  every agent it started has been archived, and then the workspace if nothing else is still running
+  there.
 
 ## Runtime boundaries
 

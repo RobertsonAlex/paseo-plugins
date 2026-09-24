@@ -33,7 +33,8 @@ const RATES: Record<string, Rates> = {
 };
 
 export function estimateCost(model: string, metrics: Metrics): number | null {
-  const normalized = model.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  // Router IDs such as "anthropic/claude-sonnet-4.5" use the base model rate.
+  const normalized = model.replace(/^.*\//, "").replace(/^(claude-[a-z]+-\d+)\.(\d+)/, "$1-$2").replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
   const rates = RATES[normalized];
   const { uncachedTokens: input, cacheReadTokens: read, cacheWriteTokens: write, outputTokens: output } = metrics;
   if (!rates || input === null || read === null || write === null || output === null) return null;

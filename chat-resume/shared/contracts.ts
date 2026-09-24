@@ -19,6 +19,8 @@ export const inspectUsageRpc = defineRpc({
         agentId: z.string(),
         exhausted: z.boolean(),
         resetAt: z.string().nullable(),
+        /** The turn stopped mid-work rather than on quota. Never true together with `exhausted`. */
+        unfinished: z.boolean(),
       }),
     ),
   }),

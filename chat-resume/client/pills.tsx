@@ -1,17 +1,13 @@
 import { type PluginClientContext } from "@getpaseo/plugin/client";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import { inspectUsageRpc, scheduleResumeRpc } from "../shared/contracts";
-import {
-  HANDOVER_SOURCE_LABEL,
-  nextReadyProvider,
-  similarMode,
-  similarThinkingOption,
-} from "../shared/handover";
+import { HANDOVER_SOURCE_LABEL } from "../shared/handover";
+import { UNFINISHED_PROMPT } from "../shared/turn-state";
 import { CONTINUE_PROMPT, resumeAction, type ResumeAction } from "../shared/usage";
+import { HandoverModal } from "./handover-modal";
+import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
 
 const AGENT_PAGE_SIZE = 200;
-const AGENT_SUBSCRIPTION_ID = "chat-resume-agents";
-const HANDOVER_PANEL_ID = "handover-draft";
 const INSPECT_BATCH = 200;
 const FLUSH_DELAY_MS = 16;
 const RETRY_DELAY_MS = 800;
@@ -30,62 +26,25 @@ interface AgentPills {
 interface UsageInspection {
   exhausted: boolean;
   resetAt: string | null;
+  unfinished: boolean;
 }
 
-async function createHandoverAgent(client: PluginClientContext, sourceAgentId: string) {
-  const refreshed = await client.paseo.agents.ref(sourceAgentId).refresh();
-  const source = refreshed?.agent;
-  if (!source || !source.workspaceId) throw new Error(`Agent not found: ${sourceAgentId}`);
-  const inspection = await client.rpc(inspectUsageRpc, { agentIds: [sourceAgentId] });
-  if (!inspection.inspections[0]?.exhausted) {
-    throw new Error("The agent's latest failure is no longer a usage-limit failure.");
-  }
+/** What the resume pill offers: continue now, schedule one resume, or pick the work back up. */
+type ResumeMode = ResumeAction | "unfinished";
 
-  const snapshot = await client.paseo.providers.waitForReady({ cwd: source.cwd, timeoutMs: 15_000 });
-  const provider = nextReadyProvider(snapshot.entries, source.provider);
-  if (!provider) throw new Error("No other ready provider is available.");
-
-  const modelsResult = provider.models?.length
-    ? { models: provider.models, error: null }
-    : await client.paseo.providers.listModels(provider.provider, { cwd: source.cwd });
-  if (modelsResult.error) throw new Error(modelsResult.error);
-  const selectableModels = (modelsResult.models ?? []).filter((model) => model.isSelectable !== false);
-  const model = selectableModels.find((candidate) => candidate.isDefault) ?? selectableModels[0];
-  if (!model) throw new Error(`Provider ${provider.provider} has no selectable model.`);
-
-  const modesResult = provider.modes?.length
-    ? { modes: provider.modes, error: null }
-    : await client.paseo.providers.listModes(provider.provider, { cwd: source.cwd });
-  if (modesResult.error) throw new Error(modesResult.error);
-  const modeId = similarMode(source.currentModeId, modesResult.modes ?? [], provider.defaultModeId);
-  const thinkingOptionId = similarThinkingOption(
-    source.effectiveThinkingOptionId ?? source.thinkingOptionId,
-    model.thinkingOptions ?? [],
-  ) ?? model.defaultThinkingOptionId;
-
-  const target = await client.paseo.workspaces.ref(source.workspaceId).agents.create({
-    config: {
-      provider: `${provider.provider}/${model.id}`,
-      ...(modeId ? { modeId } : {}),
-      ...(thinkingOptionId ? { thinkingOptionId } : {}),
-    },
-    title: `Handover: ${source.title ?? source.id.slice(0, 7)}`,
-    labels: { [HANDOVER_SOURCE_LABEL]: source.id },
-  });
-  const created = target.current() ?? (await target.refresh())?.agent;
-  const workspaceId = created?.workspaceId ?? target.workspaceId ?? source.workspaceId;
-  if (!workspaceId) throw new Error("The handover agent was created without a workspace.");
-  try {
-    client.openPanel(HANDOVER_PANEL_ID, {
-      workspaceId,
-      agentId: target.id,
-      location: "workspace",
-    });
-  } catch (error) {
-    console.error("[chat-resume] handover agent created but the draft panel did not open", target.id, error);
-  }
-  return target.id;
-}
+const RESUME_PILL: Record<ResumeMode, { label: string; icon: string; prompt: string }> = {
+  continue: {
+    label: "Continue",
+    icon: "Play",
+    prompt: CONTINUE_PROMPT,
+  },
+  schedule: { label: "Resume when renewed", icon: "RotateCcw", prompt: "" },
+  unfinished: {
+    label: "Continue",
+    icon: "StepForward",
+    prompt: UNFINISHED_PROMPT,
+  },
+};
 
 function canShowPills(agent: PaseoAgent): boolean {
   return Boolean(agent.workspaceId) && !agent.archivedAt && (agent.status === "idle" || agent.status === "error");
@@ -98,7 +57,6 @@ export function contributePills(client: PluginClientContext) {
   const resumeScheduled = new Set<string>();
   const handoverTargets = new Map<string, string>();
   const resumePending = new Set<string>();
-  const handoverPending = new Set<string>();
   const inspectQueued = new Set<string>();
   const retried = new Set<string>();
   const pendingRetry = new Set<string>();
@@ -143,40 +101,48 @@ export function contributePills(client: PluginClientContext) {
     );
   }
 
-  function registerResume(agent: PaseoAgent, action: ResumeAction, resetAt: Date | null) {
+  function resumeTitle(mode: ResumeMode, resetAt: Date | null): string {
+    if (mode === "schedule") {
+      return `Schedule one resume heartbeat for ${resetAt?.toLocaleString() ?? "renewal"}`;
+    }
+    if (mode === "unfinished") {
+      return "The last turn stopped before it finished \u2014 continue the unfinished work";
+    }
+    return "Continue now that the provider allowance should have renewed";
+  }
+
+  function registerResume(agent: PaseoAgent, mode: ResumeMode, resetAt: Date | null) {
     if (!agent.workspaceId || resumeScheduled.has(agent.id)) {
       removePill(agent.id, "resume");
       return;
     }
-    const signature = `${agent.workspaceId}:${action}:${resetAt?.toISOString() ?? "none"}`;
+    const signature = `${agent.workspaceId}:${mode}:${resetAt?.toISOString() ?? "none"}`;
     const existing = pills.get(agent.id)?.resume;
     if (existing?.signature === signature) return;
     removePill(agent.id, "resume");
 
-    const due = action === "continue";
+    const pill = RESUME_PILL[mode];
     const registration = client.addComposerPill({
-      id: "resume-after-renewal",
+      id: mode === "unfinished" ? "resume-unfinished-turn" : "resume-after-renewal",
       workspaceId: agent.workspaceId,
       agentId: agent.id,
       button: {
-        title: due
-          ? "Continue now that the provider allowance should have renewed"
-          : `Schedule one resume heartbeat for ${resetAt?.toLocaleString() ?? "renewal"}`,
-        icon: due ? "Play" : "RotateCcw",
-        label: due ? "Continue" : "Resume when renewed",
+        title: resumeTitle(mode, resetAt),
+        icon: pill.icon,
+        label: pill.label,
         behavior: {
           kind: "action",
           async onPress() {
             if (resumePending.has(agent.id)) return;
             resumePending.add(agent.id);
             try {
-              if (due) {
-                await client.paseo.agents.ref(agent.id).send(CONTINUE_PROMPT);
-                removeAll(agent.id);
-              } else {
+              if (mode === "schedule") {
                 await client.rpc(scheduleResumeRpc, { agentId: agent.id });
                 resumeScheduled.add(agent.id);
                 removePill(agent.id, "resume");
+              } else {
+                await client.paseo.agents.ref(agent.id).send(pill.prompt);
+                removeAll(agent.id);
               }
             } catch (error) {
               console.error("[chat-resume] could not resume", agent.id, error);
@@ -212,26 +178,10 @@ export function contributePills(client: PluginClientContext) {
       workspaceId: agent.workspaceId,
       agentId: agent.id,
       button: {
-        title: "Prepare a handover on the next ready provider",
+        title: "Hand over to another provider with an editable prompt",
         icon: "ArrowRightLeft",
         label: "Handover",
-        behavior: {
-          kind: "action",
-          async onPress() {
-            if (handoverPending.has(agent.id)) return;
-            handoverPending.add(agent.id);
-            try {
-              const targetId = await createHandoverAgent(client, agent.id);
-              handoverTargets.set(agent.id, targetId);
-              removePill(agent.id, "handover");
-            } catch (error) {
-              console.error("[chat-resume] could not prepare handover", agent.id, error);
-              throw error;
-            } finally {
-              handoverPending.delete(agent.id);
-            }
-          },
-        },
+        behavior: { kind: "popover", Content: HandoverModal },
       },
     });
     const state = pills.get(agent.id) ?? {};
@@ -255,7 +205,14 @@ export function contributePills(client: PluginClientContext) {
     if (!inspection) return;
     if (!inspection.exhausted) {
       resumeScheduled.delete(agent.id);
-      removeAll(agent.id);
+      if (!inspection.unfinished) {
+        removeAll(agent.id);
+        return;
+      }
+      // A turn cut short mid-work: offer to pick it up, but not a handover or a renewal schedule.
+      removePill(agent.id, "handover");
+      registerResume(agent, "unfinished", null);
+      armFlip(agent.id, null);
       return;
     }
 
@@ -293,14 +250,24 @@ export function contributePills(client: PluginClientContext) {
         const batch = ids.slice(offset, offset + INSPECT_BATCH);
         const { inspections: rows } = await client.rpc(inspectUsageRpc, { agentIds: batch });
         for (const row of rows) {
-          inspections.set(row.agentId, { exhausted: row.exhausted, resetAt: row.resetAt });
+          inspections.set(row.agentId, {
+            exhausted: row.exhausted,
+            resetAt: row.resetAt,
+            unfinished: row.unfinished,
+          });
           const agent = agents.get(row.agentId);
           if (!agent) continue;
           if (inspectQueued.has(agent.id)) continue;
           sync(agent);
           const shouldRetry = pendingRetry.has(row.agentId);
           pendingRetry.delete(row.agentId);
-          if (!row.exhausted && shouldRetry && agent.status === "idle" && !retried.has(agent.id)) {
+          if (
+            !row.exhausted &&
+            !row.unfinished &&
+            shouldRetry &&
+            agent.status === "idle" &&
+            !retried.has(agent.id)
+          ) {
             const snapshot = agent;
             setTimeout(() => {
               const current = agents.get(snapshot.id);
@@ -384,11 +351,13 @@ export function contributePills(client: PluginClientContext) {
     } else upsert(update.agent);
   });
 
-  void seedAgents(client.paseo, upsert);
+  const streams = createSubscriptionKeeper();
+  void seedAgents(client.paseo, upsert, streams);
 
   return () => {
     stopped = true;
     unsubscribe();
+    streams.release();
     if (flushTimer) clearTimeout(flushTimer);
     for (const timer of flipTimers.values()) clearTimeout(timer);
     flipTimers.clear();
@@ -398,15 +367,20 @@ export function contributePills(client: PluginClientContext) {
   };
 }
 
-async function seedAgents(paseo: PaseoApi, upsert: (agent: PaseoAgent) => void) {
+async function seedAgents(
+  paseo: PaseoApi,
+  upsert: (agent: PaseoAgent) => void,
+  streams: SubscriptionKeeper,
+) {
   try {
     let cursor: string | undefined;
     do {
       const response = await paseo.agents.list({
         filter: { includeArchived: false },
         page: { limit: AGENT_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-        ...(cursor ? {} : { subscribe: { subscriptionId: AGENT_SUBSCRIPTION_ID } }),
+        ...(cursor ? {} : { subscribe: {} }),
       });
+      streams.keep(response);
       for (const { agent } of response.entries) upsert(agent);
       cursor = response.pageInfo.hasMore ? (response.pageInfo.nextCursor ?? undefined) : undefined;
     } while (cursor);

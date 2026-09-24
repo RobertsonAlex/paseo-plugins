@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { emptyMetrics, type Session } from "../shared/schema";
-import { aggregate, chartGroups, EMPTY_FILTERS, filterSessions, metricValue, recordedEfforts, sortRows, toCsv, dateRange } from "../shared/model";
+import { aggregate, chartGroups, EMPTY_FILTERS, filterSessions, metricValue, providersInUse, recordedEfforts, sortRows, toCsv, dateRange } from "../shared/model";
 import { calendarActivity, calendarPeriod, selectCalendarDay, toggleCalendarDay } from "../shared/calendar";
 import { groupSessionRows, sortTableGroups, tableGroupsToCsv } from "../shared/table";
 
-export function fixture(id: string, provider: "claude" | "codex" = "claude"): Session {
-  return { id, nativeId: id, provider, kind: "main", parentId: null, title: id, agentId: id, workspaceId: "w", workspace: "Workspace", projectId: "p", project: "Project", cwd: "/project", branch: "main", labels: ["work"], archived: false, status: "idle", startedAt: "2026-09-01T00:00:00Z", endedAt: "2026-09-03T00:00:00Z", bytes: 1000, coverage: "available", warnings: [], buckets: [
+export function fixture(id: string, provider = "claude"): Session {
+  return { id, nativeId: id, provider, providerLabel: `${provider[0].toUpperCase()}${provider.slice(1)}`, kind: "main", parentId: null, title: id, agentId: id, workspaceId: "w", workspace: "Workspace", projectId: "p", project: "Project", cwd: "/project", branch: "main", labels: ["work"], archived: false, status: "idle", startedAt: "2026-09-01T00:00:00Z", endedAt: "2026-09-03T00:00:00Z", bytes: 1000, coverage: "available", warnings: [], buckets: [
     { day: "2026-09-01", model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 100, cacheReadTokens: 90, outputTokens: 20, toolCalls: 10, toolErrors: 1 }, tools: { Bash: 10 } },
     { day: "2026-09-02", model: "model-b", metrics: { ...emptyMetrics(), inputTokens: 900, cacheReadTokens: 90, outputTokens: 50, toolCalls: 10, toolErrors: 0 }, tools: { Read: 10 } },
   ] };
@@ -34,11 +34,11 @@ test("chart buckets conserve totals and combine weekly sessions before averaging
   const rows = filterSessions([fixture("a"), fixture("b", "codex")], EMPTY_FILTERS);
   const groups = chartGroups(rows, "day");
   assert.equal(groups.length, 2);
-  assert.equal(groups.reduce((sum, g) => sum + aggregate([...g.claude, ...g.codex], "totalTokens").value!, 0), aggregate(rows, "totalTokens").value);
+  assert.equal(groups.reduce((sum, g) => sum + aggregate(g.rows, "totalTokens").value!, 0), aggregate(rows, "totalTokens").value);
   const weeks = chartGroups(rows, "week");
   assert.equal(weeks.length, 1);
   assert.equal(weeks[0].id, "2026-08-31");
-  assert.equal(aggregate(weeks[0].claude, "inputTokens", true).value, 1000);
+  assert.equal(aggregate(weeks[0].rows.filter((r) => r.session.provider === "claude"), "inputTokens", true).value, 1000);
 });
 test("project, archived, label, provider, source and missing-data filters compose", () => {
   const a = fixture("a"), b = fixture("b", "codex"); b.archived = true;
@@ -46,10 +46,45 @@ test("project, archived, label, provider, source and missing-data filters compos
   assert.equal(filterSessions([a, b], { ...EMPTY_FILTERS, source: "external" }).length, 0);
   assert.equal(filterSessions([a, b], { ...EMPTY_FILTERS, labels: ["personal"] }).length, 0);
 });
+test("providers come from the sessions in use, with their labels, and filter, group and sort by them", () => {
+  const kilo = fixture("k", "kilocode"); kilo.providerLabel = "Kilo Code";
+  const sessions = [fixture("b", "codex"), kilo, fixture("a"), fixture("c", "codex")];
+  assert.deepEqual(providersInUse(sessions), [{ id: "claude", label: "Claude" }, { id: "codex", label: "Codex" }, { id: "kilocode", label: "Kilo Code" }]);
+  assert.deepEqual(providersInUse([]), []);
+  assert.deepEqual(filterSessions(sessions, { ...EMPTY_FILTERS, providers: ["kilocode"] }).map((r) => r.session.id), ["k"]);
+  const rows = filterSessions(sessions, EMPTY_FILTERS);
+  assert.deepEqual(groupSessionRows(rows, "provider").map((g) => [g.label, g.rows.length]).sort(), [["Claude", 1], ["Codex", 2], ["Kilo Code", 1]]);
+  assert.deepEqual(sortRows(rows, "provider", "asc").map((r) => r.session.id), ["a", "b", "c", "k"]);
+  assert.equal(chartGroups(rows, "provider")[0].rows.length, 4);
+});
 test("date validation rejects impossible dates and reversed ranges", () => {
   assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-02-30" }).error);
   assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-02", to: "2026-09-01" }).error);
   assert.equal(dateRange({ ...EMPTY_FILTERS, period: "7d" }, Date.parse("2026-09-07T12:00:00Z")).from, "2026-09-01");
+  assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 24:00" }).error);
+  assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 13:30" }).error);
+  assert.ok(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 14:00", to: "2026-09-01 13:00" }).error);
+  assert.equal(dateRange({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 23:00", to: "2026-09-01" }).error, null);
+});
+test("hour bounds select hourly activity and only whole days of activity without an hour", () => {
+  const a = fixture("a");
+  a.buckets = [
+    { day: "2026-09-01", hour: 12, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 1 }, tools: {} },
+    { day: "2026-09-01", hour: 13, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 10 }, tools: {} },
+    { day: "2026-09-02", hour: 0, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 100 }, tools: {} },
+    { day: "2026-09-02", hour: null, model: "model-a", metrics: { ...emptyMetrics(), inputTokens: 1000 }, tools: {} },
+  ];
+  const tokens = (from: string, to: string) => filterSessions([a], { ...EMPTY_FILTERS, period: "custom", from, to })[0]?.metrics.inputTokens ?? null;
+  assert.equal(tokens("2026-09-01 13:00", "2026-09-01 13:00"), 10);
+  assert.equal(tokens("2026-09-01 13:00", "2026-09-02 00:00"), 110);
+  assert.equal(tokens("2026-09-01 13:00", ""), 1110);
+  assert.equal(tokens("2026-09-02", "2026-09-02"), 1100);
+  assert.equal(tokens("2026-09-01", "2026-09-01 12:00"), 1);
+  assert.equal(tokens("2026-09-01 14:00", "2026-09-01 23:00"), null);
+  const empty = { ...fixture("empty"), buckets: [], startedAt: "2026-09-01T13:20:00.000Z" };
+  assert.equal(filterSessions([empty], { ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 13:00", to: "2026-09-01 13:00" }).length, 1);
+  assert.equal(filterSessions([empty], { ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 14:00", to: "2026-09-01 14:00" }).length, 0);
+  assert.equal(toggleCalendarDay({ ...EMPTY_FILTERS, period: "custom", from: "2026-09-01 13:00", to: "2026-09-01 13:00" }, "2026-09-01").from, "2026-09-01");
 });
 test("CSV uses raw numeric values, escapes quotes and neutralizes spreadsheet formulas", () => {
   const a = fixture("a"); a.title = '=HYPERLINK("danger")';

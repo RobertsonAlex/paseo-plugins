@@ -40,6 +40,7 @@ export function addMetrics(target: Metrics, source: Metrics): Metrics {
 }
 export const BucketSchema = z.object({
   day: z.string(), // UTC YYYY-MM-DD, or "unknown" for undated records.
+  hour: z.number().int().min(0).max(23).nullable().optional(), // UTC hour of the day; null for undated records.
   model: z.string(),
   effort: z.string().nullable().optional(), // Omitted by older snapshots; null when unrecorded.
   metrics: MetricsSchema,
@@ -49,7 +50,8 @@ export type Bucket = z.infer<typeof BucketSchema>;
 export const SessionSchema = z.object({
   id: z.string(),
   nativeId: z.string(),
-  provider: z.enum(["claude", "codex"]),
+  provider: z.string(), // Paseo provider ID, including custom providers.
+  providerLabel: z.string(),
   kind: z.enum(["main", "subagent"]),
   parentId: z.string().nullable(),
   title: z.string(),
@@ -78,5 +80,7 @@ export const SnapshotSchema = z.object({
   total: z.number().int().nonnegative(),
   generatedAt: z.string().nullable(),
   warnings: z.array(z.string()),
+  revision: z.string(), // Changes whenever the sessions change; empty before the first completed scan.
+  unchanged: z.boolean().optional(), // Sessions are omitted because the caller already has this revision.
 });
 export type Snapshot = z.infer<typeof SnapshotSchema>;

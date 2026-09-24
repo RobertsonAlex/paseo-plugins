@@ -1,13 +1,15 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Modal } from "@getpaseo/plugin/client/react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Share, Text, View, useWindowDimensions } from "react-native";
-import { listUsage } from "../shared/contracts";
-import { aggregate, DEFAULT_COLUMNS, DISPLAY_METRICS, EMPTY_FILTERS, dateRange, filterSessions, formatMetric, metricValue, METRICS, recordedEfforts, sortRows, toCsv, type DisplayMetric, type Filters, type SessionRow, type SortKey } from "../shared/model";
+import { listAllowances, listUsage } from "../shared/contracts";
+import { aggregate, DEFAULT_COLUMNS, DISPLAY_METRICS, EMPTY_FILTERS, dateRange, filterSessions, formatMetric, metricValue, METRICS, providersInUse, recordedEfforts, sortRows, toCsv, type DisplayMetric, type Filters, type SessionRow, type SortKey } from "../shared/model";
 import { PRICING_DATE } from "../shared/pricing";
+import type { Snapshot } from "../shared/schema";
 import { groupSessionRows, sortTableGroups, tableGroupsToCsv, TABLE_GROUPINGS, type GroupSortKey, type TableGrouping } from "../shared/table";
+import { AllowanceCards } from "./allowance-cards";
 import { Charts } from "./charts";
 import { GroupDetails } from "./group-details";
 import { FilterBar } from "./filter-bar";
@@ -28,7 +30,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   const [columns, setColumns] = useState<DisplayMetric[]>(saved?.columns ?? DEFAULT_COLUMNS);
   const [sort, setSort] = useState<SortKey>(saved?.sort ?? "endedAt");
   const [direction, setDirection] = useState<"asc" | "desc">(saved?.direction ?? "desc");
-  const [grouping, setGrouping] = useState<TableGrouping>(saved?.grouping ?? "sessions");
+  const [grouping, setGrouping] = useState<TableGrouping>(saved?.grouping ?? "workspace");
   const [groupSort, setGroupSort] = useState<GroupSortKey>(saved?.groupSort ?? "totalTokens");
   const [groupDirection, setGroupDirection] = useState<"asc" | "desc">(saved?.groupDirection ?? "desc");
   const [page, setPage] = useState(0);
@@ -37,8 +39,25 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   const [error, setError] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
   const list = useRpc(listUsage);
-  const query = useQuery({ queryKey: ["session-usage", host.id], queryFn: () => list({ refresh: false }), refetchInterval: (q) => q.state.data?.scanning ? 2000 : 30_000 });
+  const queryClient = useQueryClient();
+  const queryKey = ["session-usage", host.id];
+  const query = useQuery({
+    queryKey,
+    // The host omits sessions when they match the revision already shown.
+    queryFn: async () => {
+      const previous = queryClient.getQueryData<Snapshot>(queryKey);
+      const next = await list({ refresh: false, revision: previous?.revision || undefined });
+      if (!next.unchanged) return next;
+      return previous ? { ...next, sessions: previous.sessions, unchanged: false } : list({ refresh: false });
+    },
+    refetchInterval: (q) => q.state.data?.scanning ? 2000 : 30_000,
+  });
+  const readAllowances = useRpc(listAllowances);
+  const allowanceKey = ["session-usage-allowances", host.id];
+  // Paseo caches provider allowances for five minutes.
+  const allowances = useQuery({ queryKey: allowanceKey, queryFn: () => readAllowances({ refresh: false }), refetchInterval: 5 * 60_000, staleTime: 60_000 });
   const sessions = query.data?.sessions ?? [];
+  const providers = useMemo(() => providersInUse(sessions), [sessions]);
   const today = new Date().toISOString().slice(0, 10);
   const rows = useMemo(() => filterSessions(sessions, filters), [sessions, filters, today]);
   const sorted = useMemo(() => sortRows(rows, sort, direction), [rows, sort, direction]);
@@ -60,6 +79,8 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   const activeDirection = grouped ? groupDirection : direction;
   const groupingLabel = TABLE_GROUPINGS.find((option) => option.id === grouping)!.label;
   const dateError = dateRange(filters).error;
+  const updating = query.isPending || Boolean(query.data?.scanning);
+  const progress = query.data?.scanning ? `Reading transcripts: ${query.data.completed} / ${query.data.total || "…"}. ${sessions.length ? "Showing the previous completed scan." : "The first scan may take a moment."}` : "Connecting to usage index…";
   const { fontScale } = useWindowDimensions();
   const firstColumnWidth = layout.compact ? 160 : 260;
   // Both panes share vertical scrolling and identical row heights, including scaled text.
@@ -95,17 +116,25 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
   }
   return <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 12 : 24, gap: 18 }}>
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-      <View style={{ gap: 4 }}>
-        <Text accessibilityRole="header" style={{ ...text, fontSize: layout.compact ? 22 : 26, fontWeight: "700" }}>Session usage</Text>
-        <Text style={muted}>Claude & Codex · {host.label} · Active and archived sessions</Text>
+      <View style={{ gap: 4, flexShrink: 1, maxWidth: "100%" }}>
+        {/* Progress sits beside the title, so updates never shift the page. */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Text accessibilityRole="header" style={{ ...text, fontSize: layout.compact ? 22 : 26, fontWeight: "700" }}>Session usage</Text>
+          {updating ? <View testID="usage-updating" accessible accessibilityRole="progressbar" accessibilityLabel={progress} style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+            <ActivityIndicator size="small" color={theme.colors.accent} />
+            {query.data?.scanning && query.data.total ? <Text numberOfLines={1} style={muted}>{query.data.completed} / {query.data.total}</Text> : null}
+          </View> : null}
+        </View>
+        <Text style={muted}>{providers.length ? providers.map((provider) => provider.label).join(", ") : "Agent sessions"} · {host.label} · Active and archived sessions</Text>
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Pressable accessibilityRole="button" onPress={() => setHelp(true)} style={buttonStyle}><Text style={text}>Metric guide</Text></Pressable>
-        <Pressable accessibilityRole="button" disabled={query.data?.scanning || query.isFetching} accessibilityState={{ disabled: query.data?.scanning || query.isFetching }} onPress={async () => { setError(null); try { await list({ refresh: true }); await query.refetch(); } catch { setError("Could not refresh session usage. Try again."); } }} style={[buttonStyle, { opacity: query.data?.scanning ? 0.6 : 1 }]}><Text style={text}>Refresh</Text></Pressable>
+        <Pressable accessibilityRole="button" disabled={query.data?.scanning || query.isFetching} accessibilityState={{ disabled: query.data?.scanning || query.isFetching }} onPress={async () => { setError(null); try { const [, fresh] = await Promise.all([list({ refresh: true, revision: query.data?.revision || undefined }), readAllowances({ refresh: true })]); queryClient.setQueryData(allowanceKey, fresh); await query.refetch(); } catch { setError("Could not refresh session usage. Try again."); } }} style={[buttonStyle, { opacity: query.data?.scanning ? 0.6 : 1 }]}><Text style={text}>Refresh</Text></Pressable>
         <Pressable accessibilityRole="button" disabled={!tableCount} accessibilityState={{ disabled: !tableCount }} onPress={async () => { try { const csv = grouped ? tableGroupsToCsv(sortedGroups, grouping) : toCsv(sorted); if (!downloadCsv(csv)) await Share.share({ title: "Session usage", message: csv }); } catch { setError("Could not export session usage."); } }} style={buttonStyle}><Text style={text}>Export CSV</Text></Pressable>
       </View>
     </View>
-    {query.isPending || query.data?.scanning ? <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><ActivityIndicator color={theme.colors.accent} /><Text style={muted}>{query.data?.scanning ? `Reading transcripts: ${query.data.completed} / ${query.data.total || "…"}. ${sessions.length ? "Showing the previous completed scan." : "The first scan may take a moment."}` : "Connecting to usage index…"}</Text></View> : null}
+    <AllowanceCards allowances={allowances.data} sessions={sessions} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
+    {updating && !sessions.length ? <Text style={muted}>{progress}</Text> : null}
     {query.isError || error ? <Text accessibilityRole="alert" style={{ ...text, color: theme.colors.statusDanger }}>{error ?? "Could not load usage from this host. Check the connection and refresh."}</Text> : null}
     {query.data?.warnings.map((warning) => <Text key={warning} style={{ ...muted, color: theme.colors.statusWarning }}>{warning}</Text>)}
     <FilterBar sessions={sessions} filters={filters} onChange={changeFilters} theme={theme} compact={layout.compact} />
@@ -121,8 +150,8 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
         </View>;
       })}
     </View>
-    <Text style={muted}>Date filters count activity recorded on those UTC days. Cache reads and writes are included in input; reasoning is included in output. Cost estimates use base API rates ({PRICING_DATE}) and do not represent subscription charges.</Text>
-    <Charts rows={rows} sessions={sessions} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
+    <Text style={muted}>Date filters count activity recorded on those UTC days or hours. Cache reads and writes are included in input; reasoning is included in output. Cost estimates use base API rates ({PRICING_DATE}) and do not represent subscription charges.</Text>
+    <Charts rows={rows} sessions={sessions} providers={providers} filters={filters} onFiltersChange={changeFilters} theme={theme} compact={layout.compact} />
     <View testID="usage-table" style={{ gap: 10 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <Text accessibilityRole="header" style={{ ...text, fontSize: 17, fontWeight: "600" }}>{grouped ? "Grouped sessions" : "Sessions"}</Text>
@@ -159,7 +188,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
                 return numericCell(key, result.value, coverage);
               })}
             </View>) : visible.map((row, i) => <View key={row.session.id} style={{ height: tableRowHeight, flexDirection: "row", backgroundColor: i % 2 ? theme.colors.surface1 : theme.colors.surface0, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
-              {cell(row.session.provider === "claude" ? "Claude" : "Codex", 100)}{cell(row.session.project, 160)}{cell([...new Set(row.buckets.map((b) => b.model))].join(", ") || "—", 180)}
+              {cell(row.session.providerLabel, 100)}{cell(row.session.project, 160)}{cell([...new Set(row.buckets.map((b) => b.model))].join(", ") || "—", 180)}
               {cell(recordedEfforts(row.buckets).join(", ") || "—", 130)}
               {columns.map((key) => numericCell(key, metricValue(row, key)))}
               {cell(row.session.endedAt ? new Date(row.session.endedAt).toLocaleString() : "—", 170)}{cell(row.session.startedAt ? new Date(row.session.startedAt).toLocaleString() : "—", 170)}
@@ -167,7 +196,7 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
           </View>
         </ScrollView>
       </View>
-      {!tableCount && !query.isPending ? <Text style={muted}>{sessions.length ? "No sessions match these filters." : "No Claude or Codex sessions found on this host."}</Text> : null}
+      {!tableCount && !query.isPending ? <Text style={muted}>{sessions.length ? "No sessions match these filters." : "No agent sessions found on this host."}</Text> : null}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
         <Pressable accessibilityRole="button" disabled={currentPage === 0} accessibilityState={{ disabled: currentPage === 0 }} onPress={() => setPage(currentPage - 1)} style={[buttonStyle, { opacity: currentPage === 0 ? 0.4 : 1 }]}><Text style={text}>Previous</Text></Pressable>
         <Text style={muted}>Page {currentPage + 1} / {pages}</Text>
@@ -182,9 +211,9 @@ function UsageView({ theme, layout, host, navigation }: PluginSurfaceProps) {
     </Modal>
     <Modal title="Metric guide" open={help} onOpenChange={setHelp}>
       <Modal.Content><View style={{ gap: 14 }}>
-        <Text style={muted}>All files are read on the selected host. No transcript content or credentials are returned. Main sessions and subagents count once each. Deleted transcripts remain visible when Paseo still has their records.</Text>
+        <Text style={muted}>All transcripts and session stores are read on the selected host. No transcript content or credentials are returned. Main sessions and subagents count once each. Deleted transcripts remain visible when Paseo still has their records.</Text>
         <Text style={muted}>Rates are a dated standard, short-context API equivalent. Premium processing, long context, region, tools, discounts and plan charges are excluded. Unknown models remain unpriced. “Known” counts rows with a measurement, including partial rows; it is not a guarantee that every request survived.</Text>
-        <Text style={muted}>Effort shows the levels recorded by Claude or Codex for the selected activity. Multiple levels are listed together; sorting uses the highest level. “—” means no effort was recorded. Provider defaults are not inferred.</Text>
+        <Text style={muted}>Effort shows the levels recorded by the provider for the selected activity. Multiple levels are listed together; sorting uses the highest level. “—” means no effort was recorded. Provider defaults are not inferred.</Text>
         {DISPLAY_METRICS.map((key) => <View key={key} style={{ gap: 4 }}><Text style={{ ...text, fontWeight: "600" }}>{METRICS[key].label}</Text><Text style={muted}>{METRICS[key].description}</Text></View>)}
       </View></Modal.Content>
     </Modal>
@@ -201,7 +230,7 @@ function SessionDetails({ row, theme, navigation }: { row: SessionRow; theme: Pl
     <Text selectable style={muted}>{session.nativeId}</Text>
     <Text selectable style={text}>{session.project}{session.workspace ? ` / ${session.workspace}` : ""}</Text>
     <Text selectable style={muted}>{session.cwd}{session.branch ? ` · ${session.branch}` : ""}</Text>
-    <Text style={muted}>{session.provider} · {session.kind} · {session.archived ? "Archived" : "Active"} · {session.coverage}{session.parentId ? ` · Parent: ${session.parentId}` : ""}</Text>
+    <Text style={muted}>{session.providerLabel} · {session.kind} · {session.archived ? "Archived" : "Active"} · {session.coverage}{session.parentId ? ` · Parent: ${session.parentId}` : ""}</Text>
     {session.warnings.map((warning) => <Text key={warning} style={{ ...muted, color: theme.colors.statusWarning }}>{warning}</Text>)}
     {navigation && (session.agentId || session.workspaceId) ? <Pressable accessibilityRole="button" onPress={() => { if (session.agentId) navigation.openAgent({ agentId: session.agentId }); else if (session.workspaceId) navigation.openWorkspace({ workspaceId: session.workspaceId }); }} style={{ minHeight: 40, justifyContent: "center" }}><Text style={{ ...text, color: theme.colors.accent }}>Open {session.agentId ? "agent" : "workspace"}</Text></Pressable> : null}
     <Text style={muted}>Values follow the current filters. Session span and file size always cover the full transcript.</Text>

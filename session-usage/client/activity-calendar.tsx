@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { calendarActivity, calendarPeriod, toggleCalendarDay } from "../shared/calendar";
-import { dateRange, formatMetric, METRICS, type DisplayMetric, type Filters } from "../shared/model";
+import { dateRange, formatMetric, isDayString, METRICS, type DisplayMetric, type Filters } from "../shared/model";
 import type { Session } from "../shared/schema";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -23,7 +23,7 @@ export function ActivityCalendar({ sessions, filters, onChange, metric, average,
   const period = useMemo(() => calendarPeriod(today, monthly, offset), [today, monthly, offset]);
   const activity = useMemo(() => calendarActivity(sessions, filters, metric, average, period.from, period.to > today ? today : period.to), [sessions, filters, metric, average, period.from, period.to, today]);
   const selectedRange = dateRange(filters);
-  const selectedDay = !selectedRange.error && selectedRange.from && selectedRange.from === selectedRange.to ? selectedRange.from : null;
+  const selectedDay = !selectedRange.error && isDayString(selectedRange.from) && selectedRange.from === selectedRange.to ? selectedRange.from : null;
   const detailDay = inspected ?? (selectedDay && selectedDay >= period.from && selectedDay <= period.to ? selectedDay : null);
   const lifetime = metric === "durationMs" || metric === "bytes";
   const text = { color: theme.colors.foreground, fontSize: 13 };

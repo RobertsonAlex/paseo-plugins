@@ -23,7 +23,9 @@ Every workspace in the daemon's registry, newest activity first, grouped into **
 2. **Agent rows** — one per agent, archived ones included: a status glyph (a spinner while
    running), the title, an `archived` badge, the last activity, and under it, each with a small
    icon, provider, model, and last status.
-   Pressing a row opens the agent.
+   Pressing an active row opens the agent. Pressing an archived row asks whether to restore it.
+   **Restore and open** restores its provider session, then opens that agent; **Cancel** leaves
+   it archived. A failed restore shows an error and keeps the dialog open for retry.
 
 Agents whose workspace record no longer exists are grouped under a "Workspace record missing"
 card so they stay reachable.
@@ -155,6 +157,10 @@ searches those files directly:
   files than one command line can carry is split across chunks.
 - The plugin never archives, unarchives, or deletes anything. Its only writes are its own index
   file, which can be deleted at any time and is rebuilt on the next open.
+- Browsing and searching write only the plugin's index, which can be deleted and rebuilt.
+  Confirming **Restore and open** uses the daemon-local Paseo CLI (`agent reload`) to unarchive
+  the selected agent and restore its provider session. This may also recover its owning workspace.
+  The CLI must be available as `paseo` or through `PASEO_CLI_PATH`.
 
 ## Install
 

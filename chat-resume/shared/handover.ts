@@ -10,25 +10,33 @@ export const HANDOVER_PROVIDER_ORDER = [
   "gemini",
 ] as const;
 
-export function nextReadyProvider<T extends { provider: string; status: string; enabled: boolean }>(
+/** Other ready providers: preferred ones first, then catalog order starting after the current one. */
+export function readyHandoverProviders<T extends { provider: string; status: string; enabled: boolean }>(
   entries: readonly T[],
   currentProvider: string,
-): T | null {
+): T[] {
   const ready = entries.filter(
     (entry) => entry.enabled && entry.status === "ready" && entry.provider !== currentProvider,
   );
-  if (ready.length === 0) return null;
+  const ordered: T[] = [];
   for (const provider of HANDOVER_PROVIDER_ORDER) {
     const match = ready.find((entry) => entry.provider === provider);
-    if (match) return match;
+    if (match) ordered.push(match);
   }
   const currentIndex = entries.findIndex((entry) => entry.provider === currentProvider);
   for (let offset = 1; offset <= entries.length; offset += 1) {
     const index = currentIndex < 0 ? offset - 1 : (currentIndex + offset) % entries.length;
     const entry = entries[index];
-    if (entry && ready.includes(entry)) return entry;
+    if (entry && ready.includes(entry) && !ordered.includes(entry)) ordered.push(entry);
   }
-  return ready[0] ?? null;
+  return ordered;
+}
+
+export function nextReadyProvider<T extends { provider: string; status: string; enabled: boolean }>(
+  entries: readonly T[],
+  currentProvider: string,
+): T | null {
+  return readyHandoverProviders(entries, currentProvider)[0] ?? null;
 }
 
 export interface SelectOption {
@@ -85,19 +93,66 @@ export function similarThinkingOption(
   return targetOptions.find((option) => option.isDefault)?.id;
 }
 
+/** Paseo mode metadata: `colorTier` is planning/safe/moderate/dangerous, `icon` hints the approval style. */
+export interface ModeOption extends SelectOption {
+  icon?: string;
+  colorTier?: string;
+}
+
+const PERMISSION_TIERS = ["safe", "moderate", "dangerous"];
+
+function isPlanningMode(mode: ModeOption): boolean {
+  return mode.colorTier === "planning" || /plan/i.test(`${mode.id} ${mode.label}`);
+}
+
+/** Modes in the permission tier closest to the source's; the less permissive tier wins a tie. */
+function nearestTier<T extends ModeOption>(source: ModeOption, modes: readonly T[]): readonly T[] {
+  const sourceRank = PERMISSION_TIERS.indexOf(source.colorTier ?? "");
+  if (sourceRank < 0) return modes;
+  let nearest: T[] = [];
+  let nearestDistance = Infinity;
+  for (const mode of modes) {
+    const rank = PERMISSION_TIERS.indexOf(mode.colorTier ?? "");
+    if (rank < 0) continue;
+    const distance = Math.abs(rank - sourceRank) * 2 + (rank > sourceRank ? 1 : 0);
+    if (distance < nearestDistance) {
+      nearest = [mode];
+      nearestDistance = distance;
+    } else if (distance === nearestDistance) {
+      nearest.push(mode);
+    }
+  }
+  return nearest.length > 0 ? nearest : modes;
+}
+
+/**
+ * Target mode with the source mode's permission level. Mode ids differ per provider, so match by
+ * tier first, then icon, id, and the target default. Returns only ids the target offers.
+ */
 export function similarMode(
   sourceModeId: string | null | undefined,
-  targetModes: readonly SelectOption[],
+  sourceModes: readonly ModeOption[],
+  targetModes: readonly ModeOption[],
   targetDefaultModeId?: string | null,
 ): string | undefined {
   if (targetModes.length === 0) return undefined;
-  if (sourceModeId) {
-    const exact = targetModes.find((mode) => normalized(mode.id) === normalized(sourceModeId));
-    if (exact) return exact.id;
+  const defaultId = targetDefaultModeId ?? targetModes.find((mode) => mode.isDefault)?.id;
+  const targetDefault = targetModes.find((mode) => mode.id === defaultId);
+  const source: ModeOption | null = sourceModeId
+    ? (sourceModes.find((mode) => mode.id === sourceModeId) ?? { id: sourceModeId, label: sourceModeId })
+    : null;
 
-    const sourcePlans = /plan/i.test(sourceModeId);
-    const semantic = targetModes.find((mode) => /plan/i.test(`${mode.id} ${mode.label}`) === sourcePlans);
-    if (semantic) return semantic.id;
+  const pool = source ? targetModes.filter((mode) => isPlanningMode(mode) === isPlanningMode(source)) : [];
+  if (!source || pool.length === 0) {
+    if (targetDefault && !isPlanningMode(targetDefault)) return targetDefault.id;
+    return (targetModes.find((mode) => !isPlanningMode(mode)) ?? targetDefault)?.id;
   }
-  return targetDefaultModeId ?? targetModes.find((mode) => mode.isDefault)?.id;
+
+  const tier = nearestTier(source, pool);
+  return (
+    (source.icon ? tier.find((mode) => mode.icon === source.icon) : undefined) ??
+    tier.find((mode) => normalized(mode.id) === normalized(source.id)) ??
+    tier.find((mode) => mode.id === defaultId) ??
+    tier[0]
+  )?.id;
 }

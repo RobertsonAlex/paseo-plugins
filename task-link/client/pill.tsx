@@ -5,12 +5,11 @@ import { Linking } from "react-native";
 import { getBranch } from "../shared/task";
 import { findTaskIn, taskUrl, type TaskLinkSettings } from "../shared/link";
 import { getTaskLinkSettings } from "../shared/settings";
+import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
 import { SettingsSurface } from "./settings";
 import { openDesktopUrl } from "./web";
 
 const AGENT_PAGE_SIZE = 200;
-const AGENT_SUBSCRIPTION_ID = "task-link-agents";
-const WORKSPACE_SUBSCRIPTION_ID = "task-link-workspaces";
 
 async function openExternalUrl(url: string): Promise<void> {
   if (await openDesktopUrl(url)) return;
@@ -216,10 +215,11 @@ export function contributeClient(client: PluginClientContext) {
 
   // `subscribe` only reports change. Without seeding, an agent already sitting
   // idle when the app connected would have no pill until it next did something.
-  void seedWorkspaces(client).then((entries) => {
+  const streams = createSubscriptionKeeper();
+  void seedWorkspaces(client, streams).then((entries) => {
     if (stopped) return;
     for (const workspace of entries) rememberWorkspace(workspace);
-    return seedAgents(client, register);
+    return seedAgents(client, register, streams);
   });
 
   return () => {
@@ -229,17 +229,17 @@ export function contributeClient(client: PluginClientContext) {
     removeCommand();
     unsubscribeAgents();
     unsubscribeWorkspaces();
+    streams.release();
     for (const agentId of [...agents.keys()]) remove(agentId);
     workspaces.clear();
     branches.clear();
   };
 }
 
-async function seedWorkspaces(client: PluginClientContext) {
+async function seedWorkspaces(client: PluginClientContext, streams: SubscriptionKeeper) {
   try {
-    const result = await client.paseo.workspaces.list({
-      subscribe: { subscriptionId: WORKSPACE_SUBSCRIPTION_ID },
-    });
+    const result = await client.paseo.workspaces.list({ subscribe: {} });
+    streams.keep(result);
     return result.entries;
   } catch (error) {
     console.error("[task-link] could not list workspaces", error);
@@ -247,15 +247,20 @@ async function seedWorkspaces(client: PluginClientContext) {
   }
 }
 
-async function seedAgents(client: PluginClientContext, register: (agent: PaseoAgent) => void) {
+async function seedAgents(
+  client: PluginClientContext,
+  register: (agent: PaseoAgent) => void,
+  streams: SubscriptionKeeper,
+) {
   try {
     let cursor: string | undefined;
     do {
       const response = await client.paseo.agents.list({
         filter: { includeArchived: false },
         page: { limit: AGENT_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
-        ...(cursor ? {} : { subscribe: { subscriptionId: AGENT_SUBSCRIPTION_ID } }),
+        ...(cursor ? {} : { subscribe: {} }),
       });
+      streams.keep(response);
       for (const { agent } of response.entries) register(agent);
       cursor = response.pageInfo.hasMore ? (response.pageInfo.nextCursor ?? undefined) : undefined;
     } while (cursor);

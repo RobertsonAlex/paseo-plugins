@@ -29,14 +29,15 @@ Then `paseo plugin ls` should show `running`. After source edits: `npm run typec
 
 ### Agents dash
 
-[`agents-dash-list`](./agents-dash-list) — a sidebar list of workspaces grouped by what needs you:
-waiting, unread, in progress, failing, approved, idle, merged or closed. Archive or mark unread
-from the row.
+[`agents-dash-list`](./agents-dash-list) — a sidebar list of workspaces from every configured host,
+grouped by what needs you: waiting, unread, in progress, failing, approved, idle, merged or closed.
+Archive or mark unread from the row.
 
 ![Agents dash](./agents-dash-list/images/agents-dash-list.png)
 
 No settings screen. Open **Agents dash** in the sidebar or Command Center. It lists every workspace
-on the selected host.
+on every host you have configured, merged into one feed, with a host filter and a host chip on each
+row.
 
 ### Agents history
 
@@ -47,7 +48,7 @@ indexes on-disk transcripts (names and paths first); regex mode greps instead.
 ![Agents history](./agents-history/images/agents-history.png)
 
 No settings screen. Filters live on the surface. The index is stored under
-`$PASEO_HOME/plugin-data`; the plugin does not write daemon or provider state.
+`$PASEO_HOME/plugin-data`. Opening an archived agent asks for confirmation before restoring it.
 
 ### Schedule runs
 
@@ -62,9 +63,12 @@ schedules.
 
 ### Session usage
 
-[`session-usage`](./session-usage) — Claude and Codex token, cache, cost, and activity stats from
-local transcripts, including archived sessions and subagents. Sortable table, provider charts,
-calendar, and CSV export.
+[`session-usage`](./session-usage) — token, cache, cost, and activity stats for Claude, Codex,
+OpenCode, Kilo, and Devin CLI from local transcripts and session stores, including archived
+sessions and subagents, plus Cursor activity without token counts. Sortable table, provider charts,
+calendar, and CSV export. Subscription allowance cards show Paseo's reported limits with per-hour or
+per-day token charts that focus the report, and how long each allowance lasts at the current pace.
+Parsed usage is kept in an index, so reopening only reads changed sources.
 
 ![Session usage](./session-usage/images/session-usage.png)
 
@@ -81,6 +85,18 @@ such as `15m`, and phrases such as `every 15 minutes`.
 ![Heartbeats panel](./agent-heartbeats/images/agent-heartbeats-panel.png)
 
 No settings screen. The pill is per agent; the panel is an agent tab.
+
+### Skills usage
+
+[`skills-usage`](./skills-usage) — a composer **Skills** pill with the count of skills the agent has
+loaded in this chat. Press it for a searchable popover: skills used in this chat on top, then every
+skill the session reports, with a **Used** badge and an icon for where the skill lives (user,
+project, project-local, plugin, built-in). Pressing a skill puts `/skill-name` into the message
+input.
+
+No settings screen. Reads the provider's command list, the agent timeline, and the skill
+directories on the daemon machine. On phones the mention is copied to the clipboard instead of
+inserted.
 
 ### Task link
 
@@ -114,13 +130,26 @@ editor** in the Command Center. Settings live under
 
 ### Chat resume
 
-[`chat-resume`](./chat-resume) — pills on quota-exhausted agents: continue now if the allowance
-has already renewed, schedule one resume after renewal, or prepare an editable handover to
-Claude, Codex, Cursor, or another ready provider **in the same workspace**.
+[`chat-resume`](./chat-resume) — pills on agents that stopped without finishing: continue now if
+the allowance has already renewed, schedule one resume after renewal, or prepare an editable
+handover to Claude, Codex, Cursor, or another ready provider **in the same workspace**. An agent
+that went idle mid-turn — a daemon restart, a provider exit — gets a plain **Continue** instead.
 
 No settings screen, and no screenshot here: the pills appear when the latest idle or error
-state is a usage-limit / quota exhaustion, including when you reopen the thread later. The
+state is a usage-limit / quota exhaustion or an unfinished turn, including when you reopen the
+thread later. The
 handover draft is an agent panel; the new agent does not start until **Start agent** is pressed.
+
+### Profile routing
+
+[`profile-routing`](./profile-routing) — a provider whose agent is a router. Each message runs a
+model script from plugin settings (with `EFFORT` from the thinking option), starts that agent in
+the same workspace, and either relays its answer or lets it run after the router finishes
+(`handoff` / `detach`).
+
+Configure models, relay timeout, and handoff archive delay under **Settings → Plugins →
+profile-routing**. `handoff` and `detach` need `archiveOnFinish: false` on schedules so the
+delegate is not archived with the run workspace.
 
 ## Development
 

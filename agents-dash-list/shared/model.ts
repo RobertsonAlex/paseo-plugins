@@ -48,16 +48,24 @@ export const DASH_GROUP_ICONS: Record<DashGroup, string> = {
   closed: "GitMerge",
 };
 
-/** Quick actions live only on the two calm groups; everything else navigates. */
+/**
+ * Quick actions live on the groups a glance can settle: the calm ones, plus Unread and Approved,
+ * where the row itself says whether the work is done with. Groups with live activity navigate.
+ */
 export function quickActionsFor(group: DashGroup): readonly DashQuickAction[] {
-  if (group === "closed") return CLOSED_ACTIONS;
+  if (group === "closed" || group === "unread" || group === "accepted") return ARCHIVE_ONLY;
   if (group === "idle") return IDLE_ACTIONS;
   return NO_ACTIONS;
 }
 
+/** Groups whose header offers archiving every workspace in it at once. */
+export function canArchiveGroup(group: DashGroup): boolean {
+  return group === "unread" || group === "accepted";
+}
+
 export type DashQuickAction = "archive" | "markUnread";
 const NO_ACTIONS: readonly DashQuickAction[] = [];
-const CLOSED_ACTIONS: readonly DashQuickAction[] = ["archive"];
+const ARCHIVE_ONLY: readonly DashQuickAction[] = ["archive"];
 const IDLE_ACTIONS: readonly DashQuickAction[] = ["markUnread", "archive"];
 
 export const AGENT_ACTIVITIES = ["waiting", "unread", "working", "failing", "idle"] as const;
@@ -116,6 +124,10 @@ export interface DashPullRequest {
 
 export interface DashWorkspace {
   id: string;
+  /** The host this workspace lives on; ids are only unique within one. */
+  serverId: string;
+  /** Display name of that host, for the row's host chip. */
+  hostLabel: string;
   projectId: string;
   projectName: string;
   projectRootPath: string;
@@ -367,16 +379,61 @@ export function compareWorkspaces(a: DashWorkspace, b: DashWorkspace): number {
   if (project !== 0) return project;
   const name = a.name.localeCompare(b.name);
   if (name !== 0) return name;
+  const host = a.hostLabel.localeCompare(b.hostLabel);
+  if (host !== 0) return host;
   return a.id.localeCompare(b.id);
 }
 
-export function buildDashModel(input: {
+/** A React key that stays unique when two hosts hand out the same workspace id. */
+export function dashWorkspaceKey(workspace: DashWorkspace): string {
+  return `${workspace.serverId}/${workspace.id}`;
+}
+
+/** One host's slice of the dash: its label and the two directories the model reads. */
+export interface DashHostSource {
+  serverId: string;
+  hostLabel: string;
   workspaces: Iterable<PaseoWorkspace>;
   agents: Iterable<PaseoAgent>;
+}
+
+/**
+ * Groups every host's workspaces into one feed. Each host is indexed on its own — an agent only
+ * ever belongs to a workspace on its own daemon, and parent/child links never cross hosts — and
+ * the groups are merged and sorted afterwards, so the newest workspace leads whichever host it
+ * came from.
+ *
+ * Unread marks are keyed by workspace id alone: they are stored by the plugin's own server entry,
+ * which sees one flat namespace, and workspace ids are UUIDs.
+ */
+export function buildDashModel(input: {
+  hosts: readonly DashHostSource[];
   unreadMarks: Readonly<Record<string, string>>;
 }): DashModel {
+  const byGroup = new Map<DashGroup, DashWorkspace[]>();
+  let total = 0;
+  for (const host of input.hosts) {
+    total += collectHost(host, input.unreadMarks, byGroup);
+  }
+
+  const groups: DashGroupModel[] = [];
+  for (const group of DASH_GROUPS) {
+    const workspaces = byGroup.get(group);
+    if (!workspaces || workspaces.length === 0) continue;
+    workspaces.sort(compareWorkspaces);
+    groups.push({ group, workspaces });
+  }
+  return { groups, total };
+}
+
+/** Files one host's workspaces into `byGroup` and answers how many it added. */
+function collectHost(
+  host: DashHostSource,
+  unreadMarks: Readonly<Record<string, string>>,
+  byGroup: Map<DashGroup, DashWorkspace[]>,
+): number {
   const agentsById = new Map<string, PaseoAgent>();
-  for (const agent of input.agents) {
+  for (const agent of host.agents) {
     if (agent.archivedAt || !agent.workspaceId) continue;
     agentsById.set(agent.id, agent);
   }
@@ -389,9 +446,8 @@ export function buildDashModel(input: {
     agentsByWorkspace.set(agent.workspaceId, list);
   }
 
-  const byGroup = new Map<DashGroup, DashWorkspace[]>();
   let total = 0;
-  for (const workspace of input.workspaces) {
+  for (const workspace of host.workspaces) {
     const agents = (agentsByWorkspace.get(workspace.id) ?? []).sort(compareAgents);
     const pullRequest = toDashPullRequest(workspace);
     const activityAt = Math.max(
@@ -399,7 +455,7 @@ export function buildDashModel(input: {
       parseTime(workspace.statusEnteredAt),
       ...agents.map((agent) => agent.lastActivityAt),
     );
-    const mark = input.unreadMarks[workspace.id];
+    const mark = unreadMarks[workspace.id];
     const unreadMarked = isUnreadMarkActive(mark, activityAt);
     const group = deriveWorkspaceGroup({
       status: workspace.status,
@@ -409,6 +465,8 @@ export function buildDashModel(input: {
     });
     const entry: DashWorkspace = {
       id: workspace.id,
+      serverId: host.serverId,
+      hostLabel: host.hostLabel,
       projectId: workspace.projectId,
       projectName: workspace.projectDisplayName,
       projectRootPath: workspace.projectRootPath,
@@ -436,15 +494,7 @@ export function buildDashModel(input: {
     byGroup.set(group, list);
     total += 1;
   }
-
-  const groups: DashGroupModel[] = [];
-  for (const group of DASH_GROUPS) {
-    const workspaces = byGroup.get(group);
-    if (!workspaces || workspaces.length === 0) continue;
-    workspaces.sort(compareWorkspaces);
-    groups.push({ group, workspaces });
-  }
-  return { groups, total };
+  return total;
 }
 
 function normalizeBranch(branch: string | null | undefined): string | null {

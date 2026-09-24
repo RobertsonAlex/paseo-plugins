@@ -1,85 +1,66 @@
 import type { PaseoAgent, PaseoApi, PaseoWorkspace } from "@getpaseo/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  type DirectoryMirror,
+  LOADING_STATE,
+  createDirectoryMirror,
+} from "./directory-mirror";
+import type { DashHost } from "./hosts";
+import { resolveHostApi } from "./hosts";
+
 /**
- * Live mirror of one host's workspace and agent directories.
+ * One live directory mirror per configured host, reconciled as hosts connect, disconnect and are
+ * renamed.
  *
- * The daemon only streams directory updates to a connection that already asked for them, so the
- * hook registers both `subscribe` handlers before seeding and passes `subscribe` on the first
- * page of each paginated `list`. Entries live in refs that are mutated in place; renders are
- * driven by `version`, bumped at most once per event-loop tick so a burst of updates costs one
- * render instead of one render per event.
+ * Mirrors are kept in a ref and reconciled in place rather than rebuilt from an effect's cleanup:
+ * a single host going offline must not re-seed every other host's directory. Renders are driven
+ * by `version`, bumped at most once per event-loop tick, so a burst of streamed updates across
+ * several hosts costs one render instead of one per event.
  */
 
-const PAGE_LIMIT = 200;
-/** Ceiling on seed pages so a huge directory cannot spin forever. */
-const MAX_PAGES = 10;
-const WORKSPACES_SUBSCRIPTION_ID = "agents-dash-list-workspaces";
-const AGENTS_SUBSCRIPTION_ID = "agents-dash-list-agents";
+export type DashDirectoryStatus = "loading" | "ready" | "error" | "offline";
 
-export type DashDirectoryStatus = "loading" | "ready" | "error";
-
-/** Status and its message move together, so they live in one state slot. */
-interface DirectoryLoadState {
-  status: DashDirectoryStatus;
-  error: string | null;
-  /** False when the seed hit `MAX_PAGES` while the daemon still had more workspaces. */
-  complete: boolean;
-}
-
-const LOADING_STATE: DirectoryLoadState = { status: "loading", error: null, complete: false };
-
-export interface DashDirectory {
-  workspaces: ReadonlyMap<string, PaseoWorkspace>;
-  agents: ReadonlyMap<string, PaseoAgent>;
+export interface HostDirectory {
+  serverId: string;
+  label: string;
   status: DashDirectoryStatus;
   error: string | null;
   /**
-   * True once the workspace seed enumerated the whole directory. Callers that treat the workspace
-   * map as a census — the server prunes unread marks against it — must not do so before this.
+   * True once this host's workspace seed enumerated its whole directory. Callers that treat the
+   * workspace map as a census — the server prunes unread marks against it — must not do so before
+   * every host says so.
    */
   complete: boolean;
-  /** Changes whenever the maps changed; the map identities stay stable. */
+  workspaces: ReadonlyMap<string, PaseoWorkspace>;
+  agents: ReadonlyMap<string, PaseoAgent>;
+}
+
+export interface DashDirectories {
+  /** In the order `useDashHosts` gave them: the surface's own host first. */
+  hosts: readonly HostDirectory[];
+  /** Changes whenever any mirror changed; the map identities stay stable. */
   version: number;
   refresh(): void;
 }
 
-/** Local copy of the model's timestamp parser: client-only code should not widen shared/. */
-function parseTime(value: string | null | undefined): number {
-  if (!value) return 0;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+const EMPTY_WORKSPACES: ReadonlyMap<string, PaseoWorkspace> = new Map();
+const EMPTY_AGENTS: ReadonlyMap<string, PaseoAgent> = new Map();
+
+interface MirrorEntry {
+  api: PaseoApi;
+  mirror: DirectoryMirror;
 }
 
-function errorMessage(cause: unknown): string {
-  if (cause instanceof Error && cause.message) return cause.message;
-  const text = String(cause);
-  return text && text !== "undefined" ? text : "Could not load the workspace directory.";
-}
-
-/**
- * Agents without a workspace (or already archived) never render, so they are dropped instead of
- * stored. An upsert older than the snapshot already held is ignored: `list` pages and streamed
- * updates race, and the newest `updatedAt` is the one that should win.
- */
-function applyAgent(agents: Map<string, PaseoAgent>, agent: PaseoAgent): void {
-  if (agent.archivedAt || !agent.workspaceId) {
-    agents.delete(agent.id);
-    return;
-  }
-  const existing = agents.get(agent.id);
-  if (existing && parseTime(agent.updatedAt) < parseTime(existing.updatedAt)) return;
-  agents.set(agent.id, agent);
-}
-
-export function useDashDirectory(paseo: PaseoApi, hostId: string): DashDirectory {
-  const workspacesRef = useRef<Map<string, PaseoWorkspace>>(new Map());
-  const agentsRef = useRef<Map<string, PaseoAgent>>(new Map());
+export function useDashDirectories(
+  hosts: readonly DashHost[],
+  own: { id: string; api: PaseoApi },
+): DashDirectories {
+  const mirrorsRef = useRef<Map<string, MirrorEntry>>(new Map());
   const bumpScheduledRef = useRef(false);
   const mountedRef = useRef(true);
 
   const [version, setVersion] = useState(0);
-  const [load, setLoad] = useState(LOADING_STATE);
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
@@ -100,112 +81,78 @@ export function useDashDirectory(paseo: PaseoApi, hostId: string): DashDirectory
   }, []);
 
   const refresh = useCallback(() => {
+    for (const entry of mirrorsRef.current.values()) entry.mirror.stop();
+    mirrorsRef.current.clear();
     setReloadToken((current) => current + 1);
   }, []);
 
+  // Reconnects hand out a fresh API object, so the signature has to carry the status as well as
+  // the identity: a host that dropped and came back needs its mirror rebuilt on the new handle.
+  const signature = hosts.map((host) => `${host.serverId}:${host.status}`).join("\n");
+
   useEffect(() => {
-    let stopped = false;
-    const workspaces = new Map<string, PaseoWorkspace>();
-    const agents = new Map<string, PaseoAgent>();
-    workspacesRef.current = workspaces;
-    agentsRef.current = agents;
-    setLoad(LOADING_STATE);
+    const mirrors = mirrorsRef.current;
+    const wanted = new Set<string>();
+    for (const host of hosts) {
+      if (!host.online) continue;
+      const api = resolveHostApi(host.serverId, own);
+      if (!api) continue;
+      wanted.add(host.serverId);
+      const existing = mirrors.get(host.serverId);
+      if (existing?.api === api) continue;
+      existing?.mirror.stop();
+      mirrors.set(host.serverId, { api, mirror: createDirectoryMirror(api, scheduleBump) });
+    }
+    for (const [serverId, entry] of mirrors) {
+      if (wanted.has(serverId)) continue;
+      entry.mirror.stop();
+      mirrors.delete(serverId);
+    }
     scheduleBump();
+    // `hosts` and `own` are read through `signature`; their identities change on every render.
+  }, [signature, reloadToken, scheduleBump]);
 
-    const unsubscribeWorkspaces = paseo.workspaces.subscribe((update) => {
-      if (stopped) return;
-      if (update.kind === "upsert") {
-        workspaces.set(update.workspace.id, update.workspace);
-      } else {
-        workspaces.delete(update.id);
-      }
-      scheduleBump();
-    });
-
-    const unsubscribeAgents = paseo.agents.subscribe((update) => {
-      if (stopped) return;
-      if (update.kind === "upsert") {
-        applyAgent(agents, update.agent);
-      } else {
-        agents.delete(update.agentId);
-      }
-      scheduleBump();
-    });
-
-    /** Resolves to whether every page landed; a truncated seed is not a census. */
-    const seedWorkspaces = async (): Promise<boolean> => {
-      let cursor: string | undefined;
-      for (let page = 0; page < MAX_PAGES; page += 1) {
-        const result = await paseo.workspaces.list({
-          sort: [{ key: "activity_at", direction: "desc" }],
-          page: { limit: PAGE_LIMIT, cursor },
-          ...(page === 0
-            ? { subscribe: { subscriptionId: WORKSPACES_SUBSCRIPTION_ID } }
-            : {}),
-        });
-        if (stopped) return false;
-        for (const workspace of result.entries) {
-          // A streamed update that landed mid-seed is newer than this snapshot page.
-          if (!workspaces.has(workspace.id)) workspaces.set(workspace.id, workspace);
-        }
-        scheduleBump();
-        const nextCursor = result.pageInfo.nextCursor;
-        if (!result.pageInfo.hasMore || !nextCursor) return true;
-        cursor = nextCursor;
-      }
-      return false;
-    };
-
-    const seedAgents = async () => {
-      let cursor: string | undefined;
-      for (let page = 0; page < MAX_PAGES; page += 1) {
-        const result = await paseo.agents.list({
-          filter: { includeArchived: false },
-          sort: [{ key: "updated_at", direction: "desc" }],
-          page: { limit: PAGE_LIMIT, cursor },
-          ...(page === 0 ? { subscribe: { subscriptionId: AGENTS_SUBSCRIPTION_ID } } : {}),
-        });
-        if (stopped) return;
-        for (const entry of result.entries) {
-          applyAgent(agents, entry.agent);
-        }
-        scheduleBump();
-        const nextCursor = result.pageInfo.nextCursor;
-        if (!result.pageInfo.hasMore || !nextCursor) return;
-        cursor = nextCursor;
-      }
-    };
-
-    void (async () => {
-      try {
-        const complete = await seedWorkspaces();
-        await seedAgents();
-        if (stopped) return;
-        setLoad({ status: "ready", error: null, complete });
-        scheduleBump();
-      } catch (cause) {
-        if (stopped) return;
-        setLoad({ status: "error", error: errorMessage(cause), complete: false });
-      }
-    })();
-
-    return () => {
-      stopped = true;
-      unsubscribeWorkspaces();
-      unsubscribeAgents();
-    };
-  }, [paseo, hostId, reloadToken, scheduleBump]);
+  // Teardown belongs to the unmount, not to every reconcile.
+  useEffect(
+    () => () => {
+      for (const entry of mirrorsRef.current.values()) entry.mirror.stop();
+      mirrorsRef.current.clear();
+    },
+    [],
+  );
 
   return useMemo(
     () => ({
-      workspaces: workspacesRef.current,
-      agents: agentsRef.current,
-      status: load.status,
-      error: load.error,
-      complete: load.complete,
+      hosts: hosts.map((host) => {
+        const entry = mirrorsRef.current.get(host.serverId);
+        if (!entry) {
+          // Either the host is disconnected, or the reconcile effect has not run yet; both are
+          // states the surface can draw, and "loading" is the honest one for a live host.
+          return {
+            serverId: host.serverId,
+            label: host.label,
+            status: host.online ? ("loading" as const) : ("offline" as const),
+            error: null,
+            complete: false,
+            workspaces: EMPTY_WORKSPACES,
+            agents: EMPTY_AGENTS,
+          };
+        }
+        const state = entry.mirror.state ?? LOADING_STATE;
+        return {
+          serverId: host.serverId,
+          label: host.label,
+          status: state.status,
+          error: state.error,
+          complete: state.complete,
+          workspaces: entry.mirror.workspaces,
+          agents: entry.mirror.agents,
+        };
+      }),
       version,
       refresh,
     }),
-    [load, version, refresh],
+    // The mirrors are mutated in place; `version` is what says they changed.
+    [hosts, version, refresh],
   );
 }
