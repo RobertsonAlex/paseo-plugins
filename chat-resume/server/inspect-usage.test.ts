@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import type { PaseoAgent } from "@getpaseo/client";
+import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import type { TurnTimelineItem } from "../shared/turn-state";
-import { inspectAgent, latestTurnSilent, latestTurnText } from "./inspect-usage";
+import { inspectAgent, latestTurnSilent, latestTurnText, turnEndedTimeline } from "./inspect-usage";
 import { clearTranscriptCaches, latestTranscriptTurn, type TranscriptAgent } from "./transcript-tail";
 
 const CLAUDE_TEXT =
@@ -240,4 +240,32 @@ test("a timeline that cannot be read leaves the agent alone", async () => {
 test("a running agent is never unfinished", async () => {
   const inspection = await inspectAgent(idleAgent({ status: "running" }), async () => workTail);
   assert.equal(inspection.unfinished, false);
+});
+
+test("turnEndedTimeline reads the tail when the 0.13 hook timeline is empty", async () => {
+  const fromHook = [{ type: "assistant_message", text: "from hook" }] as never[];
+  let fetched = 0;
+  const paseo = {
+    agents: {
+      ref: () => ({
+        timeline: {
+          refetch: async () => {
+            fetched += 1;
+            return {
+              entries: [
+                { seqStart: 2, item: { type: "assistant_message", text: "late" } },
+                { seqStart: 1, item: { type: "user_message", text: "go" } },
+              ],
+            };
+          },
+        },
+      }),
+    },
+  } as unknown as PaseoApi;
+  assert.equal(await turnEndedTimeline({ agent: { id: "a" }, timeline: fromHook }, paseo), fromHook);
+  assert.equal(fetched, 0);
+  const tail = await turnEndedTimeline({ agent: { id: "a" }, timeline: [] }, paseo);
+  assert.equal(latestTurnText(tail), "late");
+  const broken = { agents: { ref: () => ({ timeline: { refetch: async () => ({ entries: [], error: "x" }) } }) } };
+  assert.deepEqual(await turnEndedTimeline({ agent: { id: "a" }, timeline: [] }, broken as unknown as PaseoApi), []);
 });

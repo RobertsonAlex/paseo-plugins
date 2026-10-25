@@ -157,23 +157,33 @@ function toTurnItem(item: AgentTimelineItem): TurnTimelineItem {
   };
 }
 
+/** The tail of an agent's timeline, oldest first; null when it cannot be read. */
+async function readTimelineTail(paseo: PaseoApi, agentId: string): Promise<AgentTimelineItem[] | null> {
+  try {
+    const page = await paseo.agents.ref(agentId).timeline.refetch({
+      direction: "tail",
+      limit: TIMELINE_TAIL_LIMIT,
+      projection: "projected",
+    });
+    if (page.error) return null;
+    return [...page.entries].sort((left, right) => left.seqStart - right.seqStart).map((entry) => entry.item);
+  } catch (error) {
+    console.error("[chat-resume] could not read timeline", agentId, error);
+    return null;
+  }
+}
+
 export function timelineTailReader(paseo: PaseoApi): TimelineTailReader {
-  return async (agentId) => {
-    try {
-      const page = await paseo.agents.ref(agentId).timeline.refetch({
-        direction: "tail",
-        limit: TIMELINE_TAIL_LIMIT,
-        projection: "projected",
-      });
-      if (page.error) return null;
-      return [...page.entries]
-        .sort((left, right) => left.seqStart - right.seqStart)
-        .map((entry) => toTurnItem(entry.item));
-    } catch (error) {
-      console.error("[chat-resume] could not read timeline", agentId, error);
-      return null;
-    }
-  };
+  return async (agentId) => (await readTimelineTail(paseo, agentId))?.map(toTurnItem) ?? null;
+}
+
+/** Paseo 0.13+ sends turn_ended with an empty `timeline`; read the tail instead. */
+export async function turnEndedTimeline(
+  event: { agent: { id: string }; timeline?: readonly AgentTimelineItem[] },
+  paseo: PaseoApi,
+): Promise<readonly AgentTimelineItem[]> {
+  if (event.timeline?.length) return event.timeline;
+  return (await readTimelineTail(paseo, event.agent.id)) ?? [];
 }
 
 async function mapPool<T, R>(items: readonly T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {

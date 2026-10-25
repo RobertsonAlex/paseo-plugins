@@ -548,6 +548,7 @@ declare module "@getpaseo/plugin/server" {
       agent: PluginHookAgent;
       turnId: string | null;
       outcome: PluginTurnOutcome;
+      /** @deprecated Always empty from Paseo 0.13; use `paseo.agents.ref(id).timeline.refetch`. */
       timeline: readonly import("@getpaseo/protocol/agent-types").AgentTimelineItem[];
     };
     "agent.archived": { agent: PluginHookAgent; archivedAt: string };

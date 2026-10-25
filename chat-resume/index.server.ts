@@ -3,6 +3,7 @@ import {
   forgetTurnOutput,
   inspectAgents,
   rememberTurnEnded,
+  turnEndedTimeline,
 } from "./server/inspect-usage";
 import { scheduleAgentResume } from "./server/schedule-resume";
 import { inspectUsageRpc, scheduleResumeRpc } from "./shared/contracts";
@@ -16,12 +17,12 @@ export default function contribute(server: PluginServerContext) {
       : () => {};
   const stopEnded =
     typeof server.on === "function"
-      ? server.on("agent.turn_ended", (event) => {
+      ? server.on("agent.turn_ended", async (event, { paseo }) => {
           if (event.outcome.kind === "canceled") {
             forgetTurnOutput(event.agent.id);
             return;
           }
-          rememberTurnEnded(event);
+          rememberTurnEnded({ ...event, timeline: await turnEndedTimeline(event, paseo) });
         })
       : () => {};
   server.handle(inspectUsageRpc, inspectAgents);
