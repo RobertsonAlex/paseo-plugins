@@ -1,5 +1,5 @@
 import { type PluginButtonContentProps, usePaseo } from "@getpaseo/plugin/client";
-import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
+import { Modal, useToast } from "@getpaseo/plugin/client/ui";
 import type {
   PaseoAgent,
   PaseoProviderModelsResult,

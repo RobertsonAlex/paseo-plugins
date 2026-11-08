@@ -458,6 +458,8 @@ declare module "@getpaseo/plugin/client/react-native" {
 // Settings UI contract from the Paseo v0.8 plugin SDK.
 declare module "@getpaseo/plugin/client/ui" {
   import type { ComponentType, ReactNode, Ref } from "react";
+  // Paseo 0.13 moved these here from /client/react-native.
+  export { Modal, useToast } from "@getpaseo/plugin/client/react-native";
   export interface SettingsSectionProps {
     title: string;
     info?: ReactNode;
