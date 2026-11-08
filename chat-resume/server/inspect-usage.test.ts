@@ -242,6 +242,22 @@ test("a running agent is never unfinished", async () => {
   assert.equal(inspection.unfinished, false);
 });
 
+test("a closed agent keeps its quota stop and never reads the timeline", async () => {
+  let reads = 0;
+  const readTail = async () => {
+    reads += 1;
+    return workTail;
+  };
+  const quota = await inspectAgent(
+    idleAgent({ status: "closed", lastError: "You've hit your usage limit. Try again in 2 hours." }),
+    readTail,
+  );
+  assert.equal(quota.exhausted, true);
+  const plain = await inspectAgent(idleAgent({ status: "closed" }), readTail);
+  assert.deepEqual(plain, { agentId: "agent-unfinished", exhausted: false, resetAt: null, unfinished: false });
+  assert.equal(reads, 0);
+});
+
 test("turnEndedTimeline reads the tail when the 0.13 hook timeline is empty", async () => {
   const fromHook = [{ type: "assistant_message", text: "from hook" }] as never[];
   let fetched = 0;

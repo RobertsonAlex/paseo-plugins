@@ -2,6 +2,7 @@ import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { classifyTurnTail, type TurnTimelineItem } from "../shared/turn-state";
 import { USAGE_NOTICE_MAX_CHARS, usageFromSources, type UsageMatch, type UsageSource } from "../shared/usage";
+import { pendingResumeHeartbeats } from "./schedule-resume";
 import { latestTranscriptTurn, type TranscriptTurn } from "./transcript-tail";
 
 const INSPECT_CONCURRENCY = 8;
@@ -127,7 +128,9 @@ export async function inspectAgent(
   const cached = turnOutput.get(agent.id);
 
   const match = usageFromSources(quotaSources(agent, turn));
-  if (match.exhausted || agent.status !== "idle") return toInspection(agent.id, match);
+  // A closed agent (released after an hour idle) keeps its quota stop; its pills must survive release.
+  const closed = agent.status === "closed";
+  if (match.exhausted || (agent.status !== "idle" && !closed)) return toInspection(agent.id, match);
 
   // Some providers stop on quota without a word: an idle turn with no output at all counts as exhausted.
   if (!turn?.message) {
@@ -136,7 +139,8 @@ export async function inspectAgent(
   }
 
   // A pending permission keeps the turn open: the agent is waiting for an answer, not stopped.
-  if (!readTimelineTail || (agent.pendingPermissions?.length ?? 0) > 0) {
+  // A closed agent's timeline read would reload it and restart its provider, so never read it.
+  if (!readTimelineTail || closed || (agent.pendingPermissions?.length ?? 0) > 0) {
     return toInspection(agent.id, match);
   }
 
@@ -203,8 +207,15 @@ async function mapPool<T, R>(items: readonly T[], size: number, fn: (item: T) =>
 export async function inspectAgents(
   input: { agentIds: string[] },
   context: { paseo: PaseoApi },
-): Promise<{ inspections: UsageInspection[] }> {
+): Promise<{ inspections: (UsageInspection & { resumeScheduled: boolean | null })[] }> {
   const readTail = timelineTailReader(context.paseo);
+  const scheduled = await pendingResumeHeartbeats().then(
+    (heartbeats) => new Set(heartbeats.map((heartbeat) => heartbeat.agentId)),
+    (error: unknown) => {
+      console.error("[chat-resume] could not read schedules", error);
+      return null;
+    },
+  );
   const inspections = await mapPool(input.agentIds, INSPECT_CONCURRENCY, async (agentId) => {
     try {
       const refreshed = await context.paseo.agents.ref(agentId).refresh();
@@ -216,5 +227,10 @@ export async function inspectAgents(
       return { agentId, exhausted: false, resetAt: null, unfinished: false };
     }
   });
-  return { inspections };
+  return {
+    inspections: inspections.map((inspection) => ({
+      ...inspection,
+      resumeScheduled: scheduled ? scheduled.has(inspection.agentId) : null,
+    })),
+  };
 }

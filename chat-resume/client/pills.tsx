@@ -1,6 +1,6 @@
 import { type PluginClientContext } from "@getpaseo/plugin/client";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
-import { inspectUsageRpc, scheduleResumeRpc } from "../shared/contracts";
+import { cancelResumeRpc, inspectUsageRpc, scheduleResumeRpc } from "../shared/contracts";
 import { HANDOVER_SOURCE_LABEL } from "../shared/handover";
 import { UNFINISHED_PROMPT } from "../shared/turn-state";
 import { CONTINUE_PROMPT, resumeAction, type ResumeAction } from "../shared/usage";
@@ -47,7 +47,7 @@ const RESUME_PILL: Record<ResumeMode, { label: string; icon: string; prompt: str
 };
 
 function canShowPills(agent: PaseoAgent): boolean {
-  return Boolean(agent.workspaceId) && !agent.archivedAt && (agent.status === "idle" || agent.status === "error");
+  return Boolean(agent.workspaceId) && !agent.archivedAt && ["idle", "error", "closed"].includes(agent.status);
 }
 
 export function contributePills(client: PluginClientContext) {
@@ -143,6 +143,12 @@ export function contributePills(client: PluginClientContext) {
               } else {
                 await client.paseo.agents.ref(agent.id).send(pill.prompt);
                 removeAll(agent.id);
+                // A pending renewal heartbeat would send a second continue later.
+                if (mode === "continue") {
+                  client.rpc(cancelResumeRpc, { agentId: agent.id }).catch((error: unknown) => {
+                    console.error("[chat-resume] could not cancel the scheduled resume", agent.id, error);
+                  });
+                }
               }
             } catch (error) {
               console.error("[chat-resume] could not resume", agent.id, error);
@@ -255,6 +261,9 @@ export function contributePills(client: PluginClientContext) {
             resetAt: row.resetAt,
             unfinished: row.unfinished,
           });
+          // The server's schedule store, so a scheduled resume survives an app reload.
+          if (row.resumeScheduled === true) resumeScheduled.add(row.agentId);
+          else if (row.resumeScheduled === false) resumeScheduled.delete(row.agentId);
           const agent = agents.get(row.agentId);
           if (!agent) continue;
           if (inspectQueued.has(agent.id)) continue;

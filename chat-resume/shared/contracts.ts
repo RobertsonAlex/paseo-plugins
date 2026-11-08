@@ -21,6 +21,8 @@ export const inspectUsageRpc = defineRpc({
         resetAt: z.string().nullable(),
         /** The turn stopped mid-work rather than on quota. Never true together with `exhausted`. */
         unfinished: z.boolean(),
+        /** A chat-resume heartbeat is pending for the agent; null when the schedule store could not be read. */
+        resumeScheduled: z.boolean().nullable(),
       }),
     ),
   }),
@@ -34,5 +36,15 @@ export const scheduleResumeRpc = defineRpc({
   output: z.object({
     scheduleId: z.string(),
     scheduledFor: z.string(),
+  }),
+});
+
+export const cancelResumeRpc = defineRpc({
+  name: "chat-resume.cancel",
+  input: z.object({
+    agentId: AgentIdSchema,
+  }),
+  output: z.object({
+    deleted: z.number(),
   }),
 });

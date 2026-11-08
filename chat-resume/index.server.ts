@@ -5,8 +5,8 @@ import {
   rememberTurnEnded,
   turnEndedTimeline,
 } from "./server/inspect-usage";
-import { scheduleAgentResume } from "./server/schedule-resume";
-import { inspectUsageRpc, scheduleResumeRpc } from "./shared/contracts";
+import { cancelAgentResume, scheduleAgentResume } from "./server/schedule-resume";
+import { cancelResumeRpc, inspectUsageRpc, scheduleResumeRpc } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
   const stopStarted =
@@ -27,6 +27,7 @@ export default function contribute(server: PluginServerContext) {
       : () => {};
   server.handle(inspectUsageRpc, inspectAgents);
   server.handle(scheduleResumeRpc, scheduleAgentResume);
+  server.handle(cancelResumeRpc, cancelAgentResume);
   return () => {
     stopStarted();
     stopEnded();
