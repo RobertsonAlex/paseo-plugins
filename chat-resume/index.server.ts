@@ -17,7 +17,7 @@ export default function contribute(server: PluginServerContext) {
         forgetTurnOutput(event.agent.id);
         return;
       }
-      rememberTurnEnded({ ...event, timeline: await turnEndedTimeline(event, paseo) });
+      rememberTurnEnded({ ...event, timeline: await turnEndedTimeline(event.agent.id, paseo) });
     },
   });
   server.handle(inspectUsageRpc, inspectAgents);

@@ -181,13 +181,9 @@ export function timelineTailReader(paseo: PaseoApi): TimelineTailReader {
   return async (agentId) => (await readTimelineTail(paseo, agentId))?.map(toTurnItem) ?? null;
 }
 
-/** Paseo 0.13+ sends turn_ended with an empty `timeline`; read the tail instead. */
-export async function turnEndedTimeline(
-  event: { agent: { id: string }; timeline?: readonly AgentTimelineItem[] },
-  paseo: PaseoApi,
-): Promise<readonly AgentTimelineItem[]> {
-  if (event.timeline?.length) return event.timeline;
-  return (await readTimelineTail(paseo, event.agent.id)) ?? [];
+/** The turn-end hook's `timeline` is always empty (Paseo 0.13+), so read the tail instead. */
+export async function turnEndedTimeline(agentId: string, paseo: PaseoApi): Promise<readonly AgentTimelineItem[]> {
+  return (await readTimelineTail(paseo, agentId)) ?? [];
 }
 
 async function mapPool<T, R>(items: readonly T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {

@@ -258,15 +258,12 @@ test("a closed agent keeps its quota stop and never reads the timeline", async (
   assert.equal(reads, 0);
 });
 
-test("turnEndedTimeline reads the tail when the 0.13 hook timeline is empty", async () => {
-  const fromHook = [{ type: "assistant_message", text: "from hook" }] as never[];
-  let fetched = 0;
+test("turnEndedTimeline reads the timeline tail, oldest first", async () => {
   const paseo = {
     agents: {
       ref: () => ({
         timeline: {
           refetch: async () => {
-            fetched += 1;
             return {
               entries: [
                 { seqStart: 2, item: { type: "assistant_message", text: "late" } },
@@ -278,10 +275,8 @@ test("turnEndedTimeline reads the tail when the 0.13 hook timeline is empty", as
       }),
     },
   } as unknown as PaseoApi;
-  assert.equal(await turnEndedTimeline({ agent: { id: "a" }, timeline: fromHook }, paseo), fromHook);
-  assert.equal(fetched, 0);
-  const tail = await turnEndedTimeline({ agent: { id: "a" }, timeline: [] }, paseo);
+  const tail = await turnEndedTimeline("a", paseo);
   assert.equal(latestTurnText(tail), "late");
   const broken = { agents: { ref: () => ({ timeline: { refetch: async () => ({ entries: [], error: "x" }) } }) } };
-  assert.deepEqual(await turnEndedTimeline({ agent: { id: "a" }, timeline: [] }, broken as unknown as PaseoApi), []);
+  assert.deepEqual(await turnEndedTimeline("a", broken as unknown as PaseoApi), []);
 });
