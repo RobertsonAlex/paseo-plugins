@@ -1,7 +1,7 @@
 {
   "name": "chat-resume",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Composer pills that continue a quota-exhausted agent now, resume after allowance renewal, or prepare a handover to another provider.",
   "scripts": {
     "typecheck": "tsc --noEmit",
