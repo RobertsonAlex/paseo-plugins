@@ -6,30 +6,22 @@ import {
   turnEndedTimeline,
 } from "./server/inspect-usage";
 import { cancelAgentResume, scheduleAgentResume } from "./server/schedule-resume";
+import { addTurnHooks } from "./server/turn-hooks";
 import { cancelResumeRpc, inspectUsageRpc, scheduleResumeRpc } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
-  const stopStarted =
-    typeof server.on === "function"
-      ? server.on("agent.turn_started", (event) => {
-          forgetTurnOutput(event.agent.id);
-        })
-      : () => {};
-  const stopEnded =
-    typeof server.on === "function"
-      ? server.on("agent.turn_ended", async (event, { paseo }) => {
-          if (event.outcome.kind === "canceled") {
-            forgetTurnOutput(event.agent.id);
-            return;
-          }
-          rememberTurnEnded({ ...event, timeline: await turnEndedTimeline(event, paseo) });
-        })
-      : () => {};
+  const stopTurnHooks = addTurnHooks(server, {
+    before: (event) => forgetTurnOutput(event.agent.id),
+    after: async (event, { paseo }) => {
+      if (event.outcome.kind === "canceled") {
+        forgetTurnOutput(event.agent.id);
+        return;
+      }
+      rememberTurnEnded({ ...event, timeline: await turnEndedTimeline(event, paseo) });
+    },
+  });
   server.handle(inspectUsageRpc, inspectAgents);
   server.handle(scheduleResumeRpc, scheduleAgentResume);
   server.handle(cancelResumeRpc, cancelAgentResume);
-  return () => {
-    stopStarted();
-    stopEnded();
-  };
+  return stopTurnHooks;
 }
