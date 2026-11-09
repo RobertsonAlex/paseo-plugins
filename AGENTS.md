@@ -30,8 +30,9 @@ Current plugins:
   and opens a link template; includes a native plugin settings screen.
 - `chat-resume`: adds pills that continue a quota-exhausted chat now, schedule one resume
   after provider allowance renewal, or prepare an editable handover to another ready provider.
-  Also offers a plain continue for an agent that went idle mid-turn — a daemon restart or a
-  provider exit — read from the tail of its timeline.
+  Also offers a plain continue for an agent that went idle mid-turn after a provider exit, read
+  from the tail of its timeline. (A daemon restart marks agents `closed`; on Paseo 0.15 the
+  built-in `agents.resumeOnStartup` host setting covers that.)
 - `schedule-runs`: adds a "Schedule runs" sidebar surface that lists every run of every schedule
   with status, workspace, agent, archived state, and final response, filterable by schedule,
   status, archived state, and keyword. Reads daemon state from disk; makes no schedule changes.

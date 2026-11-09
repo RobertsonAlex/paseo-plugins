@@ -133,7 +133,9 @@ editor** in the Command Center. Settings live under
 [`chat-resume`](./chat-resume) — pills on agents that stopped without finishing: continue now if
 the allowance has already renewed, schedule one resume after renewal, or prepare an editable
 handover to Claude, Codex, Cursor, or another ready provider **in the same workspace**. An agent
-that went idle mid-turn — a daemon restart, a provider exit — gets a plain **Continue** instead.
+that went idle mid-turn after a provider exit gets a plain **Continue** instead. A daemon restart
+marks its agents `closed` instead; on Paseo 0.15 the host setting `agents.resumeOnStartup` resumes
+them.
 
 No settings screen, and no screenshot here: the pills appear when the latest idle or error
 state is a usage-limit / quota exhaustion or an unfinished turn, including when you reopen the

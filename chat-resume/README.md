@@ -28,8 +28,8 @@ interrupted — is treated as quota-exhausted with no known renewal time, so it 
 
 ## Turns that stopped mid-work
 
-An agent can also go idle without finishing its turn and without saying why — the daemon
-restarted, the provider process exited, the machine went down. The plugin reads the tail of the
+An agent can also go idle without finishing its turn and without saying why — the provider
+process exited, the machine went down. The plugin reads the tail of the
 agent's timeline (through the daemon, so it covers every provider, including ACP ones with no
 on-disk transcript) and treats a turn as unfinished when tool calls ran after the last thing the
 agent said, or when the page shows only work. Trailing thoughts, todo lists, and compactions do
@@ -41,20 +41,26 @@ renewal schedule: nothing about the provider's allowance is known to be wrong. A
 always wins over this check, and an agent with a pending permission request is left alone —
 it is waiting for an answer, not stopped.
 
+A daemon restart is not covered: Paseo marks the agents it interrupted `closed` on startup, and
+the plugin never reads a closed agent's timeline (that would restart its provider). On Paseo 0.15,
+turn on `agents.resumeOnStartup` (Host settings → Agents) to have the daemon resume them itself.
+
 `paseo.agents.create({ cwd })` always opens a new workspace; handover therefore uses
 `workspaces.ref(id).agents.create` so the new agent stays in the thread you are looking at.
 No agent is created until **Send** is pressed.
 
-Provider renewal windows are not currently exposed through the public plugin API. The
-plugin reads the latest refreshed agent error and the last transcript assistant message
+The plugin reads the latest refreshed agent error and the last transcript assistant message
 for the exhaustion state and reset time, including times such as `resets 12am (Europe/Warsaw)`.
+When that text has no reset time, it takes the latest `resetsAt` among the exhausted windows that
+`paseo.providers.listUsage()` reports for the agent's provider. Usage turned off on the host, an
+empty list, or two exhausted accounts of the same provider leave it without one (plain continue).
 
 ## Limitations
 
 - Pills appear when the latest idle or error state is a usage-limit / quota-exhaustion
   message, not for context-window overflows or other failures.
 - ACP providers that keep no on-disk transcript are read through `lastError`, the live turn-end
-  event, and the daemon's timeline tail, which also carries a silent turn across a daemon restart.
+  event, and the daemon's timeline tail.
 - A turn that ends silently for another reason also gets the pills.
 - A turn whose last tool call is cancelled reads as a deliberate interruption and gets no
   **Continue**, so a turn cut short by a provider process exit mid-tool is missed.
