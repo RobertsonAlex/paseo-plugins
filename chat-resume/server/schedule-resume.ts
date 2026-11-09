@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import { CONTINUE_PROMPT, resumeAction } from "../shared/usage";
 import { inspectAgent } from "./inspect-usage";
+import { usageResetReader } from "./usage-reset";
 
 const GRACE_MS = 2 * 60_000;
 const MIN_DELAY_MS = 60_000;
@@ -195,7 +196,7 @@ async function createSchedule(agentId: string, paseo: PaseoApi): Promise<Schedul
   const refreshed = await paseo.agents.ref(agentId).refresh();
   const agent = refreshed?.agent;
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
-  const inspection = await inspectAgent(agent);
+  const inspection = await inspectAgent(agent, undefined, usageResetReader(paseo));
   if (!inspection.exhausted) {
     throw new Error("The agent's latest failure is no longer a usage-limit failure.");
   }

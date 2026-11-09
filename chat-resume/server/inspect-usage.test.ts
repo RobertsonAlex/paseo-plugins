@@ -280,3 +280,23 @@ test("turnEndedTimeline reads the timeline tail, oldest first", async () => {
   const broken = { agents: { ref: () => ({ timeline: { refetch: async () => ({ entries: [], error: "x" }) } }) } };
   assert.deepEqual(await turnEndedTimeline("a", broken as unknown as PaseoApi), []);
 });
+
+test("an exhausted agent with no renewal time in its text takes Paseo's usage reset", async () => {
+  const asked: string[] = [];
+  const readReset = async (provider: string) => {
+    asked.push(provider);
+    return "2026-11-08T15:00:00.000Z";
+  };
+  const bare = await inspectAgent(idleAgent({ lastError: "You've hit your usage limit." }), undefined, readReset);
+  assert.deepEqual(bare, { agentId: "agent-unfinished", exhausted: true, resetAt: "2026-11-08T15:00:00.000Z", unfinished: false });
+  assert.deepEqual(asked, ["cursor"]);
+
+  const timed = await inspectAgent(
+    idleAgent({ lastError: "You've hit your usage limit. Try again in 2 hours." }),
+    undefined,
+    readReset,
+  );
+  assert.notEqual(timed.resetAt, "2026-11-08T15:00:00.000Z");
+  await inspectAgent(idleAgent(), async () => [], readReset);
+  assert.deepEqual(asked, ["cursor"], "only an exhausted agent without a reset asks");
+});

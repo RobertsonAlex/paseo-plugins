@@ -4,6 +4,7 @@ import { classifyTurnTail, type TurnTimelineItem } from "../shared/turn-state";
 import { USAGE_NOTICE_MAX_CHARS, usageFromSources, type UsageMatch, type UsageSource } from "../shared/usage";
 import { pendingResumeHeartbeats } from "./schedule-resume";
 import { latestTranscriptTurn, type TranscriptTurn } from "./transcript-tail";
+import { usageResetReader, type UsageResetReader } from "./usage-reset";
 
 const INSPECT_CONCURRENCY = 8;
 /** Enough tail to reach the prompt of a short turn; a longer one is classified from its work alone. */
@@ -120,10 +121,18 @@ function quotaSources(agent: PaseoAgent, turn: TranscriptTurn | null): UsageSour
   return sources;
 }
 
+/** Inspects an agent; an exhausted one with no renewal time in its text gets Paseo's usage reset. */
 export async function inspectAgent(
   agent: PaseoAgent,
   readTimelineTail?: TimelineTailReader,
+  readUsageReset?: UsageResetReader,
 ): Promise<UsageInspection> {
+  const inspection = await classifyAgent(agent, readTimelineTail);
+  if (!inspection.exhausted || inspection.resetAt || !readUsageReset) return inspection;
+  return { ...inspection, resetAt: await readUsageReset(agent.provider) };
+}
+
+async function classifyAgent(agent: PaseoAgent, readTimelineTail?: TimelineTailReader): Promise<UsageInspection> {
   const turn = await latestTranscriptTurn(agent);
   const cached = turnOutput.get(agent.id);
 
@@ -144,7 +153,7 @@ export async function inspectAgent(
     return toInspection(agent.id, match);
   }
 
-  // The turn may also have stopped mid-work — a daemon restart, a provider exit, a lost machine.
+  // The turn may also have stopped mid-work — a provider exit, a lost machine.
   const state = classifyTurnTail((await readTimelineTail(agent.id)) ?? []);
   if (state === "silent" && !turn?.message && !cached) {
     return { agentId: agent.id, exhausted: true, resetAt: null, unfinished: false };
@@ -205,6 +214,7 @@ export async function inspectAgents(
   context: { paseo: PaseoApi },
 ): Promise<{ inspections: (UsageInspection & { resumeScheduled: boolean | null })[] }> {
   const readTail = timelineTailReader(context.paseo);
+  const readReset = usageResetReader(context.paseo);
   const scheduled = await pendingResumeHeartbeats().then(
     (heartbeats) => new Set(heartbeats.map((heartbeat) => heartbeat.agentId)),
     (error: unknown) => {
@@ -217,7 +227,7 @@ export async function inspectAgents(
       const refreshed = await context.paseo.agents.ref(agentId).refresh();
       const agent = refreshed?.agent;
       if (!agent) return { agentId, exhausted: false, resetAt: null, unfinished: false };
-      return inspectAgent(agent, readTail);
+      return inspectAgent(agent, readTail, readReset);
     } catch (error) {
       console.error("[chat-resume] could not inspect agent", agentId, error);
       return { agentId, exhausted: false, resetAt: null, unfinished: false };
