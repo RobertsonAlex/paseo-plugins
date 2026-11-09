@@ -1,4 +1,4 @@
-// Vendored type surface for the Paseo v0.8 plugin SDK.
+// Vendored type surface for the Paseo plugin SDK (0.14 floor, plus 0.15 `addHook`).
 // The daemon supplies these modules at build time; the split below mirrors the
 // SDK's exports map: root (shared), /client, /client/react-native, /client/ui, /server.
 
@@ -543,17 +543,28 @@ declare module "@getpaseo/plugin/server" {
     | { kind: "failed"; error: { message: string; code?: string } }
     | { kind: "canceled"; reason: string };
 
-  export interface PluginLifecycleEvents {
-    "agent.created": { agent: PluginHookAgent };
-    "agent.turn_started": { agent: PluginHookAgent; turnId: string | null };
-    "agent.turn_ended": {
+  /** Paseo 0.15 hook names (`addHook`); only the event hooks this plugin can use are typed. */
+  export interface PluginHookEvents {
+    "agent.turn.before": { agent: PluginHookAgent; turnId: string | null };
+    "agent.turn.after": {
       agent: PluginHookAgent;
       turnId: string | null;
       outcome: PluginTurnOutcome;
-      /** @deprecated Always empty from Paseo 0.13; use `paseo.agents.ref(id).timeline.refetch`. */
+      /** @deprecated Always empty; use `paseo.agents.ref(id).timeline.refetch`. */
       timeline: readonly import("@getpaseo/protocol/agent-types").AgentTimelineItem[];
     };
-    "agent.archived": { agent: PluginHookAgent; archivedAt: string };
+    "agent.archive.after": { agent: PluginHookAgent; archivedAt: string };
+    "agent.create.after": { agent: PluginHookAgent };
+    "agent.close.after": { agent: PluginHookAgent };
+  }
+
+  /** Legacy `on` names, mapped to the hooks above as Paseo 0.15 does. */
+  export interface PluginLifecycleEvents {
+    "agent.created": PluginHookEvents["agent.create.after"];
+    "agent.closed": PluginHookEvents["agent.close.after"];
+    "agent.turn_started": PluginHookEvents["agent.turn.before"];
+    "agent.turn_ended": PluginHookEvents["agent.turn.after"];
+    "agent.archived": PluginHookEvents["agent.archive.after"];
   }
 
   export interface PluginHookContext {
@@ -563,6 +574,12 @@ declare module "@getpaseo/plugin/server" {
 
   /** The daemon-side entry context. */
   export interface PluginServerContext {
+    /** Paseo 0.15+ only; absent on 0.14, where `on` is the sole lifecycle API. */
+    addHook?<Name extends keyof PluginHookEvents>(
+      name: Name,
+      handler: (event: PluginHookEvents[Name], context: PluginHookContext) => Promise<void>,
+    ): () => void;
+    /** @deprecated From Paseo 0.15; use `addHook`. Removed after 2027-04-30. */
     on<Name extends keyof PluginLifecycleEvents>(
       name: Name,
       handler: (
