@@ -22,8 +22,8 @@ Workspaces are sorted into exactly one group, in this order, and within a group 
 | Merged or closed | The pull request was merged or closed. |
 
 Only non-empty groups are shown. Each group is a bordered section with a bold heading; pressing
-the heading folds the group shut or open. The Unread and Approved headings also carry an
-**Archive all** button (see below).
+the heading folds the group shut or open. The checkbox at the left of the heading selects or
+clears every workspace in the group (see [Selection and bulk actions](#selection-and-bulk-actions)).
 
 ## Hosts
 
@@ -41,16 +41,25 @@ whole screen turn into an error with a Retry.
 On a Paseo older than 0.8 the app exposes no host list, and the dash shows the host it was opened
 on exactly as before.
 
-## Project filter
+## Filters and search
 
 The header holds a **Project** picker listing every project that has a workspace on a visible
-host, with workspace counts. Pick any number of projects to show only their workspaces; the count
-in the header then reads `12 of 61 workspaces`, and "All" in the picker (or "Clear filters" on the
-empty screen) clears the choice.
+host, and a **Label** picker listing every workspace label found on those workspaces, each with
+workspace counts and labels in their catalog color. Pick any number of projects or labels to show
+only workspaces in one of those projects that carry at least one of those labels. Labels are
+matched case- and whitespace-insensitively, like the app's own label picker.
+
+The **search box** above the filters narrows the feed further as you type. Every word has to
+appear somewhere on the row: the workspace name, project, branch, host, labels, agent titles, or
+the pull request title or number (`#42`). The search is not remembered between opens.
+
+While anything narrows the feed the count in the header reads `12 of 61 workspaces`; "All" in a
+picker clears that picker, and "Clear filters" on the empty screen clears every filter and the
+search.
 
 ## Remembered settings
 
-The host choice, the project choice and the folded groups are remembered between opens and across
+The host, project and label choices and the folded groups are remembered between opens and across
 app restarts. They are stored per daemon by the plugin's server entry under
 `$PASEO_HOME/plugin-data/agents-dash-list/settings.json`, so every client of that daemon opens the
 dash the way it was left.
@@ -59,8 +68,8 @@ dash the way it was left.
 
 Each workspace is one row:
 
-1. **Main line** — the project icon, the workspace name, the time of last activity, and (for the
-   groups that have them) quick-action buttons.
+1. **Main line** — a selection checkbox, the project icon, the workspace name, the time of last
+   activity, and (for the groups that have them) quick-action buttons.
 2. **Meta line** — project name, branch, host, and, when the workspace has a pull request: its
    state, checks, and review decision. Workspace labels render last, as the same colored chips
    the built-in sidebar workspace list uses.
@@ -85,10 +94,30 @@ In progress, Failing) are navigate-only:
 Archiving a workspace that has uncommitted changes or unpushed commits asks for confirmation
 first, listing what would be left behind.
 
-The **Unread** and **Approved** headings also offer **Archive all**, which archives every
-workspace currently in that group. It always asks first: the dialog says how many workspaces go
-and lists the ones that still hold uncommitted changes or unpushed commits. Workspaces are
-archived one after another and a toast reports the outcome, naming any that failed.
+## Selection and bulk actions
+
+Every row has a checkbox, and every group heading has one that selects or clears the whole group
+(it shows a dash when only some of the group is selected). Once anything is selected a bar
+appears under the header with the count and these actions:
+
+- **Add label** — a picker of every known label (the catalog plus the labels already on
+  workspaces), with a search box that also creates a new label when the name is not known yet.
+  Each row says how many of the selected workspaces already carry it (`on 2 of 5`); pressing it
+  adds the label to the rest.
+- **Remove label** — the labels the selected workspaces carry, with the same counts; pressing one
+  removes it from every selected workspace that has it.
+- **Archive** — always asks first: the dialog says how many workspaces go and lists the ones that
+  still hold uncommitted changes or unpushed commits.
+- **Clear** — empties the selection.
+
+The label pickers stay open so several labels can be changed in a row. Changes are made one
+workspace at a time through each workspace's own host, and a toast reports the outcome, naming
+any workspace that failed. A new label is created in the catalog of the host its workspace lives
+on, so labels created on a remote host get that host's color.
+
+Only rows on screen are acted upon: a selected row that the filters or search hide stays
+remembered but is left out of the count and every action. The selection is not remembered
+between opens, and archived workspaces drop out of it.
 
 ## Unread marks
 
@@ -134,6 +163,10 @@ on, and it holds marks for workspaces on the other hosts too.
   from a different host shows that host's marks and settings instead.
 - Workspaces on other hosts show the lettered color square rather than their project icon, and
   their workspace labels are colored from the opening host's catalog when the names match.
+- Adding and removing labels needs Paseo 0.16.0 or later (0.16.0-beta.1 included) on both the
+  app and the host: that is the first release whose SDK lets a plugin assign workspace labels. On
+  older versions the label pickers say so instead of offering labels; search, filters, selection
+  and bulk archive work on every supported version.
 
 ## Install
 

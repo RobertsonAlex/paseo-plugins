@@ -81,7 +81,7 @@ export const setUnreadMark = defineRpc({
 });
 
 /**
- * Viewing preferences the dash keeps between opens: which hosts and projects are shown and which
+ * Viewing preferences the dash keeps between opens: which hosts, projects and labels are shown and which
  * groups are folded shut. Stored by the plugin's server entry next to the unread marks, so they
  * follow the daemon the dash was opened on rather than the device it is drawn on.
  */
@@ -93,6 +93,11 @@ export const DashSettingsSchema = z.object({
    * plugin without this field, so it is optional on the way in and defaulted on the way out.
    */
   hostIds: z.array(z.string().min(1)).max(100).default([]),
+  /**
+   * Label keys (lowercased, whitespace-collapsed names) to show; empty means every workspace.
+   * Optional on the way in for the same reason as `hostIds`.
+   */
+  labelKeys: z.array(z.string().min(1).max(200)).max(200).default([]),
   collapsedGroups: z.array(z.enum(DASH_GROUPS)).max(DASH_GROUPS.length),
 });
 
@@ -101,6 +106,7 @@ export type DashSettings = z.infer<typeof DashSettingsSchema>;
 export const DEFAULT_DASH_SETTINGS: DashSettings = {
   projectIds: [],
   hostIds: [],
+  labelKeys: [],
   collapsedGroups: [],
 };
 

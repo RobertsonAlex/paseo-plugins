@@ -31,7 +31,8 @@ Then `paseo plugin ls` should show `running`. After source edits: `npm run typec
 
 [`agents-dash-list`](./agents-dash-list) — a sidebar list of workspaces from every configured host,
 grouped by what needs you: waiting, unread, in progress, failing, approved, idle, merged or closed.
-Archive or mark unread from the row.
+Search the feed, filter by host, project, or label, archive or mark unread from the row, and
+select rows to add or remove labels or archive them together.
 
 ![Agents dash](./agents-dash-list/images/agents-dash-list.png)
 

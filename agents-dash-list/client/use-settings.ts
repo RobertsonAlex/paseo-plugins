@@ -19,11 +19,17 @@ export interface DashSettingsApi {
   projectIds: ReadonlySet<string>;
   /** Server IDs the user chose to show; empty means every configured host. */
   hostIds: ReadonlySet<string>;
+  /** Label keys the user chose to show; empty means every workspace. */
+  labelKeys: ReadonlySet<string>;
   collapsedGroups: ReadonlySet<DashGroup>;
   setProjectIds(projectIds: Iterable<string>): void;
   toggleProject(projectId: string): void;
   setHostIds(hostIds: Iterable<string>): void;
   toggleHost(serverId: string): void;
+  setLabelKeys(labelKeys: Iterable<string>): void;
+  toggleLabel(labelKey: string): void;
+  /** Empties the host, project and label filters in one write. */
+  clearFilters(): void;
   toggleGroup(group: DashGroup): void;
 }
 
@@ -67,6 +73,7 @@ export function useDashSettings(hostId: string): DashSettingsApi {
   const settings = query.data ?? DEFAULT_DASH_SETTINGS;
   const projectIds = useMemo(() => new Set(settings.projectIds), [settings.projectIds]);
   const hostIds = useMemo(() => new Set(settings.hostIds), [settings.hostIds]);
+  const labelKeys = useMemo(() => new Set(settings.labelKeys), [settings.labelKeys]);
   const collapsedGroups = useMemo(
     () => new Set(settings.collapsedGroups),
     [settings.collapsedGroups],
@@ -110,6 +117,25 @@ export function useDashSettings(hostId: string): DashSettingsApi {
       }),
     [update],
   );
+  const setLabelKeys = useCallback(
+    (keys: Iterable<string>) =>
+      update((current) => ({ ...current, labelKeys: [...new Set(keys)] })),
+    [update],
+  );
+  const toggleLabel = useCallback(
+    (key: string) =>
+      update((current) => {
+        const next = new Set(current.labelKeys);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return { ...current, labelKeys: [...next] };
+      }),
+    [update],
+  );
+  const clearFilters = useCallback(
+    () => update((current) => ({ ...current, projectIds: [], hostIds: [], labelKeys: [] })),
+    [update],
+  );
   const toggleGroup = useCallback(
     (group: DashGroup) =>
       update((current) => {
@@ -126,11 +152,15 @@ export function useDashSettings(hostId: string): DashSettingsApi {
     ready: query.data !== undefined,
     projectIds,
     hostIds,
+    labelKeys,
     collapsedGroups,
     setProjectIds,
     toggleProject,
     setHostIds,
     toggleHost,
+    setLabelKeys,
+    toggleLabel,
+    clearFilters,
     toggleGroup,
   };
 }
