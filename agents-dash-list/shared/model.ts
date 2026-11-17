@@ -58,11 +58,6 @@ export function quickActionsFor(group: DashGroup): readonly DashQuickAction[] {
   return NO_ACTIONS;
 }
 
-/** Groups whose header offers archiving every workspace in it at once. */
-export function canArchiveGroup(group: DashGroup): boolean {
-  return group === "unread" || group === "accepted";
-}
-
 export type DashQuickAction = "archive" | "markUnread";
 const NO_ACTIONS: readonly DashQuickAction[] = [];
 const ARCHIVE_ONLY: readonly DashQuickAction[] = ["archive"];
@@ -500,6 +495,67 @@ function collectHost(
 function normalizeBranch(branch: string | null | undefined): string | null {
   const trimmed = branch?.trim();
   return trimmed ? trimmed : null;
+}
+
+/**
+ * Label names are compared the way the app's label picker compares them: case- and
+ * whitespace-insensitively. The key is what filters and bulk edits match on; the name as written
+ * on the workspace is what gets drawn.
+ */
+export function labelKey(name: string): string {
+  return name.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function hasLabel(workspace: Pick<DashWorkspace, "labels">, key: string): boolean {
+  return workspace.labels.some((label) => labelKey(label) === key);
+}
+
+/**
+ * Splits a search box entry into lowercase terms. Every term has to be found somewhere on the
+ * row, so `api fail` narrows rather than widens.
+ */
+export function searchTerms(query: string): readonly string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/** Everything a row shows that a user might type to find it, lowercased once. */
+function searchableText(workspace: DashWorkspace): string {
+  const parts: string[] = [
+    workspace.name,
+    workspace.projectName,
+    workspace.hostLabel,
+    workspace.branch ?? "",
+    ...workspace.labels,
+    ...workspace.agents.map((agent) => agent.title),
+  ];
+  const pullRequest = workspace.pullRequest;
+  if (pullRequest) {
+    parts.push(pullRequest.title);
+    if (pullRequest.number !== null) parts.push(`#${pullRequest.number}`, `!${pullRequest.number}`);
+  }
+  return parts.join("\n").toLowerCase();
+}
+
+export function matchesSearch(workspace: DashWorkspace, terms: readonly string[]): boolean {
+  if (terms.length === 0) return true;
+  const text = searchableText(workspace);
+  return terms.every((term) => text.includes(term));
+}
+
+/** The model with only the workspaces `keep` accepts; groups it empties are dropped. */
+export function filterDashModel(
+  model: DashModel,
+  keep: (workspace: DashWorkspace) => boolean,
+): DashModel {
+  const groups: DashGroupModel[] = [];
+  let total = 0;
+  for (const entry of model.groups) {
+    const workspaces = entry.workspaces.filter(keep);
+    if (workspaces.length === 0) continue;
+    groups.push({ group: entry.group, workspaces });
+    total += workspaces.length;
+  }
+  return { groups, total };
 }
 
 const MINUTE_MS = 60_000;

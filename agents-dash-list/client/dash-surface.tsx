@@ -10,23 +10,35 @@ import {
   StyleSheet,
   type StyleProp,
   Text,
+  TextInput,
   View,
   type ViewStyle,
 } from "react-native";
-import type { DecorationProjectInput } from "../shared/contracts";
-import { groupColor, themeScheme } from "../shared/colors";
+import type {
+  DecorationProjectInput,
+  LabelDefinition,
+  WorkspaceLabelColor,
+} from "../shared/contracts";
+import { groupColor, identityFill, themeScheme } from "../shared/colors";
 import {
   DASH_GROUP_DESCRIPTIONS,
   DASH_GROUP_ICONS,
   DASH_GROUP_LABELS,
   type DashGroup,
   type DashHostSource,
+  type DashModel,
+  type DashWorkspace,
   buildDashModel,
-  canArchiveGroup,
   dashWorkspaceKey,
+  filterDashModel,
+  hasLabel,
+  labelKey,
+  matchesSearch,
   quickActionsFor,
+  searchTerms,
 } from "../shared/model";
-import { ArchiveGroupButton } from "./bulk-archive";
+import { BulkActionBar, type LabelOption } from "./bulk-actions";
+import { type CheckState, Checkbox } from "./checkbox";
 import { Dropdown, type DropdownOption } from "./dropdown";
 import { useDashHosts, resolveHostApi } from "./hosts";
 import { type HostDirectory, useDashDirectories } from "./use-directory";
@@ -46,8 +58,13 @@ import { WorkspaceRow, buildLabelColors } from "./workspace-row";
  * for that host's projects alone and other hosts' rows fall back to the project initial, while
  * the label catalog — a small list of names and colors — is applied to every host.
  *
- * The host filter, the project filter and the folded groups are viewing preferences the server
- * entry stores per daemon, so the dash opens the way it was left, app restarts included.
+ * The host, project and label filters and the folded groups are viewing preferences the server
+ * entry stores per daemon, so the dash opens the way it was left, app restarts included. The
+ * search box and the row selection are transient and live in this component only.
+ *
+ * Selection is keyed by `dashWorkspaceKey` and only ever acts on rows that are on screen: a row a
+ * filter or search hides stays remembered but is left out of the count and every bulk action, so
+ * nothing invisible gets archived or relabelled.
  */
 
 /** How often the relative timestamps are recomputed. */
@@ -57,6 +74,7 @@ const MAX_DECORATED_PROJECTS = 500;
 /** The unread contract accepts at most this many workspace ids per call. */
 const MAX_PRUNE_WORKSPACE_IDS = 2000;
 const NO_WORKSPACE_IDS: readonly string[] = [];
+const NO_WORKSPACES: readonly DashWorkspace[] = [];
 
 export function DashSurface({ theme, host, layout, navigation }: PluginSurfaceProps) {
   const paseo = usePaseo();
@@ -155,18 +173,100 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
       })),
     [visibleHosts, directories.version, selectedProjects],
   );
-  const model = useMemo(
+  const baseModel = useMemo(
     () => buildDashModel({ hosts: sources, unreadMarks: marks }),
     [sources, marks],
   );
-  const filtered = selectedProjects.size > 0 || selectedHosts.size > 0;
+
+  // Labels are filtered after the model is built: the model is where every host's label lists
+  // already sit side by side on the rows.
+  const selectedLabels = settings.labelKeys;
+  const labelOptions = useMemo(
+    () => buildLabelOptions(baseModel, decorations.labels),
+    [baseModel, decorations.labels],
+  );
+  const labelFilterOptions = useMemo(
+    () => buildLabelFilterOptions(baseModel, labelColors, selectedLabels),
+    [baseModel, labelColors, selectedLabels],
+  );
+  const labelSummary = summarizeChoice(
+    selectedLabels,
+    new Map(labelOptions.map((option) => [option.key, option.name])),
+  );
+
+  const [search, setSearch] = useState("");
+  const terms = useMemo(() => searchTerms(search), [search]);
+  const model = useMemo(() => {
+    if (selectedLabels.size === 0 && terms.length === 0) return baseModel;
+    return filterDashModel(
+      baseModel,
+      (workspace) =>
+        (selectedLabels.size === 0 ||
+          [...selectedLabels].some((key) => hasLabel(workspace, key))) &&
+        matchesSearch(workspace, terms),
+    );
+  }, [baseModel, selectedLabels, terms]);
+
+  const narrowed =
+    selectedProjects.size > 0 ||
+    selectedHosts.size > 0 ||
+    selectedLabels.size > 0 ||
+    terms.length > 0;
   const collapsed = settings.collapsedGroups;
   const toggleGroup = settings.toggleGroup;
+
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSelected = useCallback((key: string) => {
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const setGroupSelected = useCallback((keys: readonly string[], select: boolean) => {
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      for (const key of keys) {
+        if (select) next.add(key);
+        else next.delete(key);
+      }
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedKeys(new Set()), []);
+  const selectedWorkspaces = useMemo(() => {
+    if (selectedKeys.size === 0) return NO_WORKSPACES;
+    const kept: DashWorkspace[] = [];
+    for (const entry of model.groups) {
+      for (const workspace of entry.workspaces) {
+        if (selectedKeys.has(dashWorkspaceKey(workspace))) kept.push(workspace);
+      }
+    }
+    return kept;
+  }, [model, selectedKeys]);
+  // Archived workspaces leave the directory and their keys are dropped. Keys are checked against
+  // every host's whole directory, not what the filters show, so a filter change does not
+  // silently forget a selection.
+  const presentKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const entry of directories.hosts) {
+      for (const id of entry.workspaces.keys()) keys.add(`${entry.serverId}/${id}`);
+    }
+    return keys;
+    // The maps are mutated in place; `version` is what says they changed.
+  }, [directories.hosts, directories.version]);
+  useEffect(() => {
+    setSelectedKeys((current) => {
+      if ([...current].every((key) => presentKeys.has(key))) return current;
+      return new Set([...current].filter((key) => presentKeys.has(key)));
+    });
+  }, [presentKeys]);
 
   // Settings decide what is shown and what is folded; drawing before they answer would flash
   // the unfiltered, unfolded dash and then rearrange it.
   const loading =
-    (visibleHosts.some((entry) => entry.status === "loading") && model.total === 0) ||
+    (visibleHosts.some((entry) => entry.status === "loading") && baseModel.total === 0) ||
     !settings.ready;
   const troubled = visibleHosts.filter(
     (entry) => entry.status === "error" || entry.status === "offline",
@@ -177,13 +277,40 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
 
   return (
     <View style={styles.screen}>
-      {/* The screen header above already carries the icon and the "Agents dash" title, so this
-          row only holds what it does not: the count, the host and project filters and the
-          refresh affordance. */}
+      {/* The screen header above already carries the icon and the "Agents dash" title, so these
+          rows only hold what it does not: the search box, the count, the host, project and
+          label filters and the refresh affordance. */}
+      <View style={styles.searchRow}>
+        <View style={styles.search}>
+          <Icon name="Search" size={13} color={theme.colors.foregroundMuted} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search workspaces, branches, agents, labels"
+            placeholderTextColor={theme.colors.foregroundMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            accessibilityLabel="Search the dash"
+            returnKeyType="search"
+            style={styles.searchInput}
+          />
+          {search ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear the search"
+              hitSlop={8}
+              onPress={() => setSearch("")}
+              style={styles.searchClear}
+            >
+              <Icon name="X" size={13} color={theme.colors.foregroundMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
       <View style={styles.header}>
         <Text style={styles.total} numberOfLines={1}>
-          {filtered ? `${model.total} of ${allWorkspaceIds.length}` : model.total}{" "}
-          {(filtered ? allWorkspaceIds.length : model.total) === 1 ? "workspace" : "workspaces"}
+          {narrowed ? `${model.total} of ${allWorkspaceIds.length}` : model.total}{" "}
+          {(narrowed ? allWorkspaceIds.length : model.total) === 1 ? "workspace" : "workspaces"}
         </Text>
         <View style={styles.headerSpacer} />
         {/* A single configured host needs no filter: the rows still name it. */}
@@ -213,6 +340,18 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
           theme={theme}
           compact={layout.compact}
         />
+        <Dropdown
+          label="Label"
+          icon="Tag"
+          summary={labelSummary}
+          options={labelFilterOptions}
+          selected={selectedLabels}
+          multi
+          onToggle={settings.toggleLabel}
+          onClear={() => settings.setLabelKeys([])}
+          theme={theme}
+          compact={layout.compact}
+        />
         <RefreshButton
           theme={theme}
           style={styles.refresh}
@@ -220,6 +359,16 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
           onPress={directories.refresh}
         />
       </View>
+
+      <BulkActionBar
+        selected={selectedWorkspaces}
+        labelOptions={labelOptions}
+        theme={theme}
+        scheme={scheme}
+        compact={layout.compact}
+        resolveApi={resolveApi}
+        onClear={clearSelection}
+      />
 
       {loading ? (
         <View style={styles.centered}>
@@ -239,14 +388,20 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
         </View>
       ) : model.groups.length === 0 ? (
         <View style={styles.centered}>
-          <Text style={styles.empty}>{describeEmpty(visibleHosts, selectedProjects)}</Text>
-          {filtered ? (
+          <Text style={styles.empty}>
+            {describeEmpty(
+              visibleHosts,
+              selectedProjects,
+              selectedLabels.size > 0 || terms.length > 0,
+            )}
+          </Text>
+          {narrowed ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Clear the filters"
+              accessibilityLabel="Clear the filters and the search"
               onPress={() => {
-                settings.setProjectIds([]);
-                settings.setHostIds([]);
+                settings.clearFilters();
+                setSearch("");
               }}
               style={({ pressed }) => [styles.retry, pressed ? styles.retryPressed : null]}
             >
@@ -266,42 +421,40 @@ export function DashSurface({ theme, host, layout, navigation }: PluginSurfacePr
             <GroupSection
               key={group}
               group={group}
-              count={workspaces.length}
+              workspaces={workspaces}
+              selectedKeys={selectedKeys}
+              onSelectGroup={setGroupSelected}
               expanded={!collapsed.has(group)}
               onToggle={toggleGroup}
               theme={theme}
               scheme={scheme}
               styles={styles}
-              action={
-                canArchiveGroup(group) ? (
-                  <ArchiveGroupButton
-                    group={group}
-                    workspaces={workspaces}
-                    theme={theme}
-                    resolveApi={resolveApi}
-                  />
-                ) : null
-              }
             >
-              {workspaces.map((workspace) => (
-                <WorkspaceRow
-                  key={dashWorkspaceKey(workspace)}
-                  workspace={workspace}
-                  actions={quickActionsFor(group)}
-                  theme={theme}
-                  scheme={scheme}
-                  nowMs={nowMs}
-                  iconUri={
-                    workspace.serverId === host.id
-                      ? (decorations.icons[workspace.projectId] ?? null)
-                      : null
-                  }
-                  labelColors={labelColors}
-                  navigation={navigation}
-                  paseo={resolveApi(workspace.serverId)}
-                  setUnread={setUnread}
-                />
-              ))}
+              {workspaces.map((workspace) => {
+                const key = dashWorkspaceKey(workspace);
+                return (
+                  <WorkspaceRow
+                    key={key}
+                    selectionKey={key}
+                    selected={selectedKeys.has(key)}
+                    onToggleSelected={toggleSelected}
+                    workspace={workspace}
+                    actions={quickActionsFor(group)}
+                    theme={theme}
+                    scheme={scheme}
+                    nowMs={nowMs}
+                    iconUri={
+                      workspace.serverId === host.id
+                        ? (decorations.icons[workspace.projectId] ?? null)
+                        : null
+                    }
+                    labelColors={labelColors}
+                    navigation={navigation}
+                    paseo={resolveApi(workspace.serverId)}
+                    setUnread={setUnread}
+                  />
+                );
+              })}
             </GroupSection>
           ))}
         </ScrollView>
@@ -327,10 +480,12 @@ function describeTrouble(troubled: readonly HostDirectory[]): string {
 function describeEmpty(
   visibleHosts: readonly HostDirectory[],
   selectedProjects: ReadonlySet<string>,
+  searchedOrLabelled: boolean,
 ): string {
   const [only] = visibleHosts;
   if (!only) return "No hosts selected";
   const where = visibleHosts.length === 1 ? `on ${only.label}` : `on ${visibleHosts.length} hosts`;
+  if (searchedOrLabelled) return `No workspaces match ${where}`;
   if (selectedProjects.size === 0) return `No workspaces ${where}`;
   return `No workspaces in the selected ${selectedProjects.size === 1 ? "project" : "projects"} ${where}`;
 }
@@ -338,31 +493,38 @@ function describeEmpty(
 /**
  * One status group: a bordered card whose header names the status and folds the rows away.
  * The header is the whole touch target, so collapsing works with a thumb as well as a pointer;
- * a group-wide action, when there is one, sits at its right end outside that target.
+ * the selection box at its left end, outside that target, ticks or clears every row in it.
  */
 function GroupSection({
   group,
-  count,
+  workspaces,
+  selectedKeys,
+  onSelectGroup,
   expanded,
   onToggle,
   theme,
   scheme,
   styles,
-  action,
   children,
 }: {
   group: DashGroup;
-  count: number;
+  workspaces: readonly DashWorkspace[];
+  selectedKeys: ReadonlySet<string>;
+  onSelectGroup(keys: readonly string[], select: boolean): void;
   expanded: boolean;
   onToggle(group: DashGroup): void;
   theme: PluginTheme;
   scheme: ReturnType<typeof themeScheme>;
   styles: SurfaceStyles;
-  action: ReactNode;
   children: ReactNode;
 }) {
   const [hovered, setHovered] = useState(false);
   const label = DASH_GROUP_LABELS[group];
+  const count = workspaces.length;
+  const keys = useMemo(() => workspaces.map(dashWorkspaceKey), [workspaces]);
+  const ticked = keys.reduce((total, key) => total + (selectedKeys.has(key) ? 1 : 0), 0);
+  const checkState: CheckState =
+    ticked === 0 ? "unchecked" : ticked === keys.length ? "checked" : "mixed";
   return (
     <View style={styles.group}>
       <View
@@ -372,6 +534,16 @@ function GroupSection({
           expanded ? styles.groupHeaderExpanded : null,
         ]}
       >
+        <Checkbox
+          state={checkState}
+          label={
+            checkState === "checked"
+              ? `Deselect every workspace in ${label}`
+              : `Select every workspace in ${label}`
+          }
+          theme={theme}
+          onToggle={() => onSelectGroup(keys, checkState !== "checked")}
+        />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${label}, ${count} ${count === 1 ? "workspace" : "workspaces"}`}
@@ -395,7 +567,6 @@ function GroupSection({
             <Text style={styles.groupCount}>{count}</Text>
           </View>
         </Pressable>
-        {action}
       </View>
       {expanded ? <View style={styles.rows}>{children}</View> : null}
     </View>
@@ -474,7 +645,8 @@ function buildProjectOptions(hosts: readonly HostDirectory[]): DropdownOption[] 
   return [...counts.entries()]
     .map(([id, entry]) => ({
       id,
-      label: (nameCounts.get(entry.name) ?? 0) > 1 ? `${entry.name} (${entry.rootPath})` : entry.name,
+      label:
+        (nameCounts.get(entry.name) ?? 0) > 1 ? `${entry.name} (${entry.rootPath})` : entry.name,
       icon: "FolderGit2",
       count: entry.count,
     }))
@@ -496,6 +668,75 @@ function summarizeChoice(
     return names.get(id ?? "") ?? "1 selected";
   }
   return `${selected.size} selected`;
+}
+
+/**
+ * Every label the add picker can offer: the opening host's catalog (with its colors) and every
+ * label already on a row, whichever host it came from, one entry per key, alphabetically.
+ */
+function buildLabelOptions(model: DashModel, catalog: readonly LabelDefinition[]): LabelOption[] {
+  const options = new Map<string, LabelOption>();
+  for (const definition of catalog) {
+    const key = labelKey(definition.name);
+    if (key && !options.has(key)) {
+      options.set(key, {
+        key,
+        name: definition.name.replace(/\s+/g, " ").trim(),
+        color: definition.color,
+      });
+    }
+  }
+  for (const entry of model.groups) {
+    for (const workspace of entry.workspaces) {
+      for (const name of workspace.labels) {
+        const key = labelKey(name);
+        if (key && !options.has(key)) options.set(key, { key, name, color: undefined });
+      }
+    }
+  }
+  return [...options.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * One filter row per label found on the rows the host and project filters leave, with how many
+ * workspaces carry it. A chosen label that no row carries any more is still listed, at zero, so
+ * it can be unticked.
+ */
+function buildLabelFilterOptions(
+  model: DashModel,
+  colors: ReadonlyMap<string, WorkspaceLabelColor>,
+  selected: ReadonlySet<string>,
+): DropdownOption[] {
+  const counts = new Map<string, { name: string; count: number }>();
+  for (const entry of model.groups) {
+    for (const workspace of entry.workspaces) {
+      // A workspace counts once per label even if it spells the label twice.
+      const seen = new Set<string>();
+      for (const name of workspace.labels) {
+        const key = labelKey(name);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const current = counts.get(key);
+        if (current) current.count += 1;
+        else counts.set(key, { name, count: 1 });
+      }
+    }
+  }
+  for (const key of selected) {
+    if (!counts.has(key)) counts.set(key, { name: key, count: 0 });
+  }
+  return [...counts.entries()]
+    .map(([key, entry]) => {
+      const color = colors.get(key);
+      return {
+        id: key,
+        label: entry.name,
+        icon: "Tag",
+        iconColor: color ? identityFill(color) : undefined,
+        count: entry.count,
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /** One decoration request per project, in first-seen order and within the contract's ceiling. */
@@ -526,10 +767,32 @@ function createStyles(theme: PluginTheme, compact: boolean) {
       flexWrap: "wrap",
       gap: 8,
       paddingHorizontal: gutter,
-      paddingTop: compact ? 8 : 12,
+      paddingTop: 8,
       paddingBottom: 4,
     },
     total: { color: theme.colors.foregroundMuted, fontSize: 13, flexShrink: 1 },
+    searchRow: { paddingHorizontal: gutter, paddingTop: compact ? 8 : 12 },
+    search: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      minHeight: 34,
+      paddingLeft: 10,
+      paddingRight: 6,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    // 16px keeps iOS from zooming the page when the field takes focus; desktop reads it at 13.
+    searchInput: {
+      flex: 1,
+      minWidth: 0,
+      color: theme.colors.foreground,
+      fontSize: compact ? 16 : 13,
+      paddingVertical: 6,
+    },
+    searchClear: { width: 24, height: 24, alignItems: "center", justifyContent: "center" },
     headerSpacer: { flex: 1 },
     refresh: { width: 28, height: 28, alignItems: "center", justifyContent: "center" },
 

@@ -32,17 +32,20 @@ import {
   type DashQuickAction,
   type DashWorkspace,
   formatTimeAgo,
+  labelKey,
   projectInitial,
 } from "../shared/model";
 import { ArchiveConfirm, describeArchiveRisks } from "./archive-confirm";
+import { Checkbox } from "./checkbox";
 import { openExternalUrl } from "./open-external-url";
 
 /**
- * One workspace as three stacked lines: the project icon, workspace name, time and quick
- * actions on one line (the name ellipsizes), a wrapping meta line indented by half the icon
- * (project, branch, host, pull request, checks, review, services, labels), and the agents that
- * live in it as pills. Pressing the row opens its first agent, pressing a pill opens that
- * agent, and the quick actions of the calm groups sit on the right of the main line.
+ * One workspace as three stacked lines: a selection box, the project icon, workspace name, time
+ * and quick actions on one line (the name ellipsizes), a wrapping meta line (project, branch,
+ * host, pull request, checks, review, services, labels), and the agents that live in it as pills.
+ * Pressing the row opens its first agent, pressing a pill opens that agent, pressing the box
+ * selects the row for the bulk actions, and the quick actions of the calm groups sit on the
+ * right of the main line.
  */
 
 export type RowNavigation = PluginSurfaceProps["navigation"];
@@ -61,11 +64,12 @@ export interface WorkspaceRowProps {
   /** The API of this workspace's own host, or null while that host is disconnected. */
   paseo: PaseoApi | null;
   setUnread(workspaceId: string, unread: boolean): Promise<void>;
-}
-
-/** Catalog names are matched case- and whitespace-insensitively, like the app's label picker. */
-export function normalizeLabelName(name: string): string {
-  return name.replace(/\s+/g, " ").trim().toLowerCase();
+  /** Whether the row's selection box is ticked. */
+  selected: boolean;
+  /** Called with `dashWorkspaceKey(workspace)` when the selection box is pressed. */
+  onToggleSelected(key: string): void;
+  /** `dashWorkspaceKey(workspace)`, handed in so the row does not rebuild it. */
+  selectionKey: string;
 }
 
 export function buildLabelColors(
@@ -73,7 +77,7 @@ export function buildLabelColors(
 ): ReadonlyMap<string, WorkspaceLabelColor> {
   const colors = new Map<string, WorkspaceLabelColor>();
   for (const definition of definitions) {
-    colors.set(normalizeLabelName(definition.name), definition.color);
+    colors.set(labelKey(definition.name), definition.color);
   }
   return colors;
 }
@@ -100,6 +104,9 @@ function WorkspaceRowImpl({
   navigation,
   paseo,
   setUnread,
+  selected,
+  onToggleSelected,
+  selectionKey,
 }: WorkspaceRowProps) {
   const toast = useToast();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -203,6 +210,12 @@ function WorkspaceRowImpl({
   const body = (
     <>
       <View style={styles.mainLine}>
+        <Checkbox
+          state={selected ? "checked" : "unchecked"}
+          label={`Select ${workspace.name}`}
+          theme={theme}
+          onToggle={() => onToggleSelected(selectionKey)}
+        />
         <ProjectIcon
           uri={iconUri}
           projectId={workspace.projectId}
@@ -258,7 +271,15 @@ function WorkspaceRowImpl({
   if (!navigation) {
     return (
       <>
-        <View style={[styles.row, dimmed ? styles.rowDimmed : null]}>{body}</View>
+        <View
+          style={[
+            styles.row,
+            selected ? styles.rowSelected : null,
+            dimmed ? styles.rowDimmed : null,
+          ]}
+        >
+          {body}
+        </View>
         {confirm}
       </>
     );
@@ -274,6 +295,7 @@ function WorkspaceRowImpl({
         onPress={handleRowPress}
         style={({ pressed }) => [
           styles.row,
+          selected ? styles.rowSelected : null,
           hovered ? styles.rowHovered : null,
           pressed ? styles.rowPressed : null,
           dimmed ? styles.rowDimmed : null,
@@ -304,6 +326,9 @@ function areRowPropsEqual(previous: WorkspaceRowProps, next: WorkspaceRowProps):
     previous.navigation === next.navigation &&
     previous.paseo === next.paseo &&
     previous.setUnread === next.setUnread &&
+    previous.selected === next.selected &&
+    previous.onToggleSelected === next.onToggleSelected &&
+    previous.selectionKey === next.selectionKey &&
     isSameWorkspace(previous.workspace, next.workspace)
   );
 }
@@ -729,7 +754,7 @@ function MetaLine({
             <LabelChip
               key={label}
               name={label}
-              color={labelColors.get(normalizeLabelName(label))}
+              color={labelColors.get(labelKey(label))}
               scheme={scheme}
               theme={theme}
               styles={styles}
@@ -876,6 +901,7 @@ function AgentPill({
 type RowStyles = ReturnType<typeof createStyles>;
 
 const PROJECT_ICON_SIZE = 20;
+const CHECKBOX_SLOT = 28;
 
 function createStyles(theme: PluginTheme) {
   return StyleSheet.create({
@@ -885,6 +911,7 @@ function createStyles(theme: PluginTheme) {
       paddingVertical: 8,
       paddingHorizontal: 10,
     },
+    rowSelected: { backgroundColor: theme.colors.surface1 },
     rowHovered: { backgroundColor: theme.colors.surface1 },
     rowPressed: { backgroundColor: theme.colors.surface2 },
     rowDimmed: { opacity: 0.6 },
@@ -918,7 +945,9 @@ function createStyles(theme: PluginTheme) {
     },
     projectInitial: { color: "#ffffff", fontSize: 11, fontWeight: "700" },
 
-    details: { paddingLeft: PROJECT_ICON_SIZE / 2, gap: 6 },
+    // The checkbox (20) and the gap after it (8) push the icon right; the details stay indented
+    // by half the icon from there, as before the checkbox existed.
+    details: { paddingLeft: CHECKBOX_SLOT + PROJECT_ICON_SIZE / 2, gap: 6 },
     metaLine: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", rowGap: 4 },
     metaEntry: { flexDirection: "row", alignItems: "center" },
     metaSeparator: { color: theme.colors.foregroundMuted, fontSize: 12, paddingHorizontal: 6 },
