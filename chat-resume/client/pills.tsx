@@ -2,10 +2,13 @@ import { type PluginClientContext } from "@getpaseo/plugin/client";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import { cancelResumeRpc, inspectUsageRpc, scheduleResumeRpc } from "../shared/contracts";
 import { HANDOVER_SOURCE_LABEL } from "../shared/handover";
+import { readResumeMarker } from "../shared/resume-marker";
 import { UNFINISHED_PROMPT } from "../shared/turn-state";
 import { CONTINUE_PROMPT, resumeAction, type ResumeAction } from "../shared/usage";
+import { workspaceBadgeStates } from "../shared/workspace-badge";
 import { HandoverModal } from "./handover-modal";
 import { createSubscriptionKeeper, type SubscriptionKeeper } from "./directory-subscription";
+import { setWorkspaceBadgeStates } from "./workspace-badge";
 
 const AGENT_PAGE_SIZE = 200;
 const INSPECT_BATCH = 200;
@@ -140,6 +143,7 @@ export function contributePills(client: PluginClientContext) {
                 await client.rpc(scheduleResumeRpc, { agentId: agent.id });
                 resumeScheduled.add(agent.id);
                 removePill(agent.id, "resume");
+                publishBadges();
               } else {
                 await client.paseo.agents.ref(agent.id).send(pill.prompt);
                 removeAll(agent.id);
@@ -268,6 +272,7 @@ export function contributePills(client: PluginClientContext) {
           if (!agent) continue;
           if (inspectQueued.has(agent.id)) continue;
           sync(agent);
+          publishBadges();
           const shouldRetry = pendingRetry.has(row.agentId);
           pendingRetry.delete(row.agentId);
           if (
@@ -294,7 +299,19 @@ export function contributePills(client: PluginClientContext) {
     }
   }
 
+  function publishBadges() {
+    const exhausted = new Set<string>();
+    for (const [id, inspection] of inspections) if (inspection.exhausted) exhausted.add(id);
+    const visible = [...agents.values()].filter(canShowPills);
+    setWorkspaceBadgeStates(workspaceBadgeStates(visible, resumeScheduled, exhausted));
+  }
+
   function upsert(agent: PaseoAgent) {
+    upsertAgent(agent);
+    publishBadges();
+  }
+
+  function upsertAgent(agent: PaseoAgent) {
     const previous = agents.get(agent.id);
     if (previous && previous.updatedAt > agent.updatedAt) return;
 
@@ -327,6 +344,10 @@ export function contributePills(client: PluginClientContext) {
       return;
     }
 
+    // The 0.16 agent metadata marks a scheduled resume before the first inspect answers; inspect
+    // (the schedule store) stays authoritative and clears a stale marker.
+    if (readResumeMarker(agent)) resumeScheduled.add(agent.id);
+
     const unchanged =
       previous &&
       previous.updatedAt === agent.updatedAt &&
@@ -357,6 +378,7 @@ export function contributePills(client: PluginClientContext) {
       pendingRetry.delete(update.agentId);
       inspectQueued.delete(update.agentId);
       removeAll(update.agentId);
+      publishBadges();
     } else upsert(update.agent);
   });
 

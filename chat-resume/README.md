@@ -17,7 +17,11 @@ interrupted — is treated as quota-exhausted with no known renewal time, so it 
   already passed, or when the message has no parseable renewal time.
 - **Resume when renewed** creates one heartbeat with `maxRuns: 1`. Shown while the renewal
   time is still in the future. It runs two minutes after renewal and continues the same
-  agent. Once that time arrives, the pill becomes **Continue**.
+  agent. Once that time arrives, the pill becomes **Continue**. The schedule is also recorded in
+  the agent's metadata (`chat-resume.resume`), which the app reads without an RPC; the schedule
+  store stays authoritative and each inspect repairs a stale or missing marker. A workspace row
+  in the sidebar shows a warning badge ("Resume queued" or "Quota hit") while one of its agents
+  has a scheduled resume or is quota-exhausted.
 - **Handover** opens a modal with an editable continuation prompt (commands for recovering the
   source chat through the `paseo` CLI) and a choice of the other ready providers and their
   models, preferring Claude, Codex, Cursor, OpenCode, Copilot, and Gemini. The mode is matched by
@@ -42,7 +46,7 @@ always wins over this check, and an agent with a pending permission request is l
 it is waiting for an answer, not stopped.
 
 A daemon restart is not covered: Paseo marks the agents it interrupted `closed` on startup, and
-the plugin never reads a closed agent's timeline (that would restart its provider). On Paseo 0.15,
+the plugin never reads a closed agent's timeline (that would restart its provider). On Paseo 0.15+,
 turn on `agents.resumeOnStartup` (Host settings → Agents) to have the daemon resume them itself.
 
 `paseo.agents.create({ cwd })` always opens a new workspace; handover therefore uses

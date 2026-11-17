@@ -30,7 +30,7 @@ Current plugins:
   agent. Reads daemon state from disk; writes only its own index under `$PASEO_HOME/plugin-data`.
 - `task-link`: adds a composer pill for task IDs extracted with a configurable regular expression
   and opens a link template; includes a native plugin settings screen.
-- `chat-resume`: adds pills that continue a quota-exhausted chat now, schedule one resume
+- `chat-resume` (Paseo 0.16+): adds pills that continue a quota-exhausted chat now, schedule one resume
   after provider allowance renewal, or prepare an editable handover to another ready provider.
   Also offers a plain continue for an agent that went idle mid-turn after a provider exit, read
   from the tail of its timeline. (A daemon restart marks agents `closed`; on Paseo 0.15 the
