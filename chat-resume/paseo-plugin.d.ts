@@ -1,4 +1,4 @@
-// Vendored type surface for the Paseo plugin SDK (0.14 floor, plus 0.15 `addHook`).
+// Vendored type surface for the Paseo plugin SDK (0.16 floor; only what this plugin uses).
 // The daemon supplies these modules at build time; the split below mirrors the
 // SDK's exports map: root (shared), /client, /client/react-native, /client/ui, /server.
 
@@ -105,6 +105,8 @@ declare module "@getpaseo/plugin" {
     readonly attentionReason: "finished" | "error" | "permission" | null;
     readonly parentAgentId: string | null;
     readonly labels: Readonly<Record<string, string>>;
+    /** Structured data plugins store on the agent (Paseo 0.16). */
+    readonly metadata: Readonly<Record<string, JsonValue>>;
   }
 
   export interface PluginThemeColors {
@@ -183,6 +185,19 @@ declare module "@getpaseo/plugin/client" {
   }
 
   export interface PluginSurfaceProps extends PluginNavigableHostProps {}
+
+  export interface PluginWorkspaceRowBadgeItemProps extends PluginHostProps {
+    workspaceId: string;
+  }
+
+  /** Renders once per workspace row; render `WorkspaceRowBadge` or null. */
+  export interface PluginWorkspaceRowBadgeItemContribution {
+    id: string;
+    /** The item's toggle in the sidebar's Show menu. */
+    title: string;
+    icon: string;
+    Component: ComponentType<PluginWorkspaceRowBadgeItemProps>;
+  }
 
   export interface PluginIconProps {
     name: string;
@@ -388,6 +403,8 @@ declare module "@getpaseo/plugin/client" {
     addHeaderButton(contribution: PluginHeaderButtonContribution): PluginButtonRegistration;
     addComposerPill(contribution: PluginComposerPillContribution): PluginButtonRegistration;
     addAttachmentSource(contribution: PluginAttachmentSourceContribution): PluginCleanup;
+    /** Paseo 0.16 apps only; check before calling. */
+    addWorkspaceRowBadgeItem?(contribution: PluginWorkspaceRowBadgeItemContribution): PluginCleanup;
     addTheme(contribution: PluginThemeContribution): PluginCleanup;
     addTimelineTransformer<ItemType extends AgentTimelineItem["type"]>(
       contribution: PluginTimelineTransformerContribution<ItemType>,
@@ -518,11 +535,21 @@ declare module "@getpaseo/plugin/client/ui" {
   export function SettingsSelect<Value extends string>(props: SettingsSelectProps<Value>): ReactNode;
   export const SettingsInput: ComponentType<SettingsInputProps>;
   export const SettingsAction: ComponentType<SettingsActionProps>;
+
+  export type WorkspaceRowBadgeTone = "muted" | "success" | "warning" | "danger" | "info";
+  export interface WorkspaceRowBadgeProps {
+    icon?: string;
+    label?: string;
+    tone?: WorkspaceRowBadgeTone;
+    accessibilityLabel?: string;
+  }
+  export const WorkspaceRowBadge: ComponentType<WorkspaceRowBadgeProps>;
 }
 
 declare module "@getpaseo/plugin/server" {
   import type { PaseoApi } from "@getpaseo/client";
   import type { ZodType, input as ZodInput, output as ZodOutput } from "zod";
+  import type { JsonValue } from "@getpaseo/protocol/agent-types";
   import type { PluginCleanup, PluginRpcContract } from "@getpaseo/plugin";
 
   export interface PluginHandlerContext {
@@ -536,6 +563,8 @@ declare module "@getpaseo/plugin/server" {
     provider: string;
     cwd: string;
     title: string | null;
+    readonly background: boolean;
+    metadata: Record<string, JsonValue>;
   }
 
   export type PluginTurnOutcome =
@@ -543,28 +572,17 @@ declare module "@getpaseo/plugin/server" {
     | { kind: "failed"; error: { message: string; code?: string } }
     | { kind: "canceled"; reason: string };
 
-  /** Paseo 0.15 hook names (`addHook`); only the event hooks this plugin can use are typed. */
+  /** Hook names for `addHook`; only the event hooks this plugin can use are typed. */
   export interface PluginHookEvents {
     "agent.turn.before": { agent: PluginHookAgent; turnId: string | null };
     "agent.turn.after": {
       agent: PluginHookAgent;
       turnId: string | null;
       outcome: PluginTurnOutcome;
-      /** @deprecated Always empty; use `paseo.agents.ref(id).timeline.refetch`. */
-      timeline: readonly import("@getpaseo/protocol/agent-types").AgentTimelineItem[];
     };
     "agent.archive.after": { agent: PluginHookAgent; archivedAt: string };
     "agent.create.after": { agent: PluginHookAgent };
     "agent.close.after": { agent: PluginHookAgent };
-  }
-
-  /** Legacy `on` names, mapped to the hooks above as Paseo 0.15 does. */
-  export interface PluginLifecycleEvents {
-    "agent.created": PluginHookEvents["agent.create.after"];
-    "agent.closed": PluginHookEvents["agent.close.after"];
-    "agent.turn_started": PluginHookEvents["agent.turn.before"];
-    "agent.turn_ended": PluginHookEvents["agent.turn.after"];
-    "agent.archived": PluginHookEvents["agent.archive.after"];
   }
 
   export interface PluginHookContext {
@@ -574,18 +592,9 @@ declare module "@getpaseo/plugin/server" {
 
   /** The daemon-side entry context. */
   export interface PluginServerContext {
-    /** Paseo 0.15+ only; absent on 0.14, where `on` is the sole lifecycle API. */
-    addHook?<Name extends keyof PluginHookEvents>(
+    addHook<Name extends keyof PluginHookEvents>(
       name: Name,
       handler: (event: PluginHookEvents[Name], context: PluginHookContext) => Promise<void>,
-    ): () => void;
-    /** @deprecated From Paseo 0.15; use `addHook`. Removed after 2027-04-30. */
-    on<Name extends keyof PluginLifecycleEvents>(
-      name: Name,
-      handler: (
-        event: PluginLifecycleEvents[Name],
-        context: PluginHookContext,
-      ) => void | Promise<void>,
     ): () => void;
     handle<InputSchema extends ZodType, OutputSchema extends ZodType>(
       contract: PluginRpcContract<InputSchema, OutputSchema>,

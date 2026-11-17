@@ -1,14 +1,13 @@
-import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
+import type { PaseoAgent, PaseoAgentTimelineRefetchOptions, PaseoApi } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { classifyTurnTail, type TurnTimelineItem } from "../shared/turn-state";
 import { USAGE_NOTICE_MAX_CHARS, usageFromSources, type UsageMatch, type UsageSource } from "../shared/usage";
-import { pendingResumeHeartbeats } from "./schedule-resume";
+import { readResumeMarker, reconcileResumeMarker } from "../shared/resume-marker";
+import { pendingResumeHeartbeats, writeResumeMarker } from "./schedule-resume";
 import { latestTranscriptTurn, type TranscriptTurn } from "./transcript-tail";
 import { usageResetReader, type UsageResetReader } from "./usage-reset";
 
 const INSPECT_CONCURRENCY = 8;
-/** Enough tail to reach the prompt of a short turn; a longer one is classified from its work alone. */
-const TIMELINE_TAIL_LIMIT = 60;
 
 const TURN_ACTIVITY = new Set<AgentTimelineItem["type"]>([
   "assistant_message",
@@ -170,16 +169,22 @@ function toTurnItem(item: AgentTimelineItem): TurnTimelineItem {
   };
 }
 
-/** The tail of an agent's timeline, oldest first; null when it cannot be read. */
-async function readTimelineTail(paseo: PaseoApi, agentId: string): Promise<AgentTimelineItem[] | null> {
+/** Paseo 0.16's `wholeTurns` is missing from the pinned `@getpaseo/client` types. */
+type WholeTurnsRefetch = PaseoAgentTimelineRefetchOptions & { wholeTurns?: boolean };
+
+/**
+ * The agent's latest whole turn, oldest first; null when it cannot be read. With a `turnId` (turn
+ * IDs are unique across resumed sessions) only that turn's entries are kept.
+ */
+async function readTimelineTail(paseo: PaseoApi, agentId: string, turnId?: string | null): Promise<AgentTimelineItem[] | null> {
   try {
-    const page = await paseo.agents.ref(agentId).timeline.refetch({
-      direction: "tail",
-      limit: TIMELINE_TAIL_LIMIT,
-      projection: "projected",
-    });
+    const options: WholeTurnsRefetch = { direction: "tail", limit: 1, wholeTurns: true, projection: "projected" };
+    const page = await paseo.agents.ref(agentId).timeline.refetch(options);
     if (page.error) return null;
-    return [...page.entries].sort((left, right) => left.seqStart - right.seqStart).map((entry) => entry.item);
+    return page.entries
+      .filter((entry) => !turnId || entry.turnId === turnId)
+      .sort((left, right) => left.seqStart - right.seqStart)
+      .map((entry) => entry.item);
   } catch (error) {
     console.error("[chat-resume] could not read timeline", agentId, error);
     return null;
@@ -190,9 +195,13 @@ export function timelineTailReader(paseo: PaseoApi): TimelineTailReader {
   return async (agentId) => (await readTimelineTail(paseo, agentId))?.map(toTurnItem) ?? null;
 }
 
-/** The turn-end hook's `timeline` is always empty (Paseo 0.13+), so read the tail instead. */
-export async function turnEndedTimeline(agentId: string, paseo: PaseoApi): Promise<readonly AgentTimelineItem[]> {
-  return (await readTimelineTail(paseo, agentId)) ?? [];
+/** The turn-end hook carries no timeline (removed in Paseo 0.16), so read the finished turn. */
+export async function turnEndedTimeline(
+  agentId: string,
+  turnId: string | null,
+  paseo: PaseoApi,
+): Promise<readonly AgentTimelineItem[]> {
+  return (await readTimelineTail(paseo, agentId, turnId)) ?? [];
 }
 
 async function mapPool<T, R>(items: readonly T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -216,7 +225,7 @@ export async function inspectAgents(
   const readTail = timelineTailReader(context.paseo);
   const readReset = usageResetReader(context.paseo);
   const scheduled = await pendingResumeHeartbeats().then(
-    (heartbeats) => new Set(heartbeats.map((heartbeat) => heartbeat.agentId)),
+    (heartbeats) => new Map(heartbeats.map((heartbeat) => [heartbeat.agentId, heartbeat])),
     (error: unknown) => {
       console.error("[chat-resume] could not read schedules", error);
       return null;
@@ -227,6 +236,9 @@ export async function inspectAgents(
       const refreshed = await context.paseo.agents.ref(agentId).refresh();
       const agent = refreshed?.agent;
       if (!agent) return { agentId, exhausted: false, resetAt: null, unfinished: false };
+      // The marker follows the schedule store: clear a stale one, add a missing one.
+      const patch = scheduled && reconcileResumeMarker(readResumeMarker(agent), scheduled.get(agentId));
+      if (patch) await writeResumeMarker(context.paseo, agentId, patch);
       return inspectAgent(agent, readTail, readReset);
     } catch (error) {
       console.error("[chat-resume] could not inspect agent", agentId, error);

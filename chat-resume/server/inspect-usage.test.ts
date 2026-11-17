@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
 import type { TurnTimelineItem } from "../shared/turn-state";
-import { inspectAgent, latestTurnSilent, latestTurnText, turnEndedTimeline } from "./inspect-usage";
+import { inspectAgent, inspectAgents, latestTurnSilent, latestTurnText, turnEndedTimeline } from "./inspect-usage";
 import { clearTranscriptCaches, latestTranscriptTurn, type TranscriptAgent } from "./transcript-tail";
 
 const CLAUDE_TEXT =
@@ -258,16 +258,19 @@ test("a closed agent keeps its quota stop and never reads the timeline", async (
   assert.equal(reads, 0);
 });
 
-test("turnEndedTimeline reads the timeline tail, oldest first", async () => {
+test("turnEndedTimeline reads the latest whole turn and keeps only the ended turn's entries", async () => {
+  const seen: unknown[] = [];
   const paseo = {
     agents: {
       ref: () => ({
         timeline: {
-          refetch: async () => {
+          refetch: async (options: unknown) => {
+            seen.push(options);
             return {
               entries: [
-                { seqStart: 2, item: { type: "assistant_message", text: "late" } },
-                { seqStart: 1, item: { type: "user_message", text: "go" } },
+                { seqStart: 3, turnId: "t2", item: { type: "assistant_message", text: "late" } },
+                { seqStart: 2, turnId: "t1", item: { type: "assistant_message", text: "old" } },
+                { seqStart: 1, turnId: "t2", item: { type: "user_message", text: "go" } },
               ],
             };
           },
@@ -275,10 +278,13 @@ test("turnEndedTimeline reads the timeline tail, oldest first", async () => {
       }),
     },
   } as unknown as PaseoApi;
-  const tail = await turnEndedTimeline("a", paseo);
+  const tail = await turnEndedTimeline("a", "t2", paseo);
   assert.equal(latestTurnText(tail), "late");
+  assert.equal(tail.length, 2);
+  assert.deepEqual(seen[0], { direction: "tail", limit: 1, wholeTurns: true, projection: "projected" });
+  assert.equal((await turnEndedTimeline("a", null, paseo)).length, 3, "no turn id keeps the whole latest turn");
   const broken = { agents: { ref: () => ({ timeline: { refetch: async () => ({ entries: [], error: "x" }) } }) } };
-  assert.deepEqual(await turnEndedTimeline("a", broken as unknown as PaseoApi), []);
+  assert.deepEqual(await turnEndedTimeline("a", "t2", broken as unknown as PaseoApi), []);
 });
 
 test("an exhausted agent with no renewal time in its text takes Paseo's usage reset", async () => {
@@ -299,4 +305,46 @@ test("an exhausted agent with no renewal time in its text takes Paseo's usage re
   assert.notEqual(timed.resetAt, "2026-11-08T15:00:00.000Z");
   await inspectAgent(idleAgent(), async () => [], readReset);
   assert.deepEqual(asked, ["cursor"], "only an exhausted agent without a reset asks");
+});
+
+test("inspectAgents reconciles resume markers with the schedule store", async () => {
+  const home = join(root, "paseo-home");
+  await mkdir(join(home, "schedules"), { recursive: true });
+  await writeFile(
+    join(home, "schedules", "s-new.json"),
+    JSON.stringify({
+      id: "s-new",
+      name: "chat-resume-a-missing",
+      status: "active",
+      nextRunAt: "2026-11-17T10:00:00.000Z",
+      target: { type: "agent", agentId: "a-missing" },
+    }),
+  );
+  const previousHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = home;
+  const writes: [string, unknown][] = [];
+  const marker = { scheduleId: "gone", at: "2026-11-01T00:00:00.000Z" };
+  const metadata: Record<string, unknown> = { "a-stale": { "chat-resume.resume": marker } };
+  const paseo = {
+    agents: {
+      ref: (id: string) => ({
+        refresh: async () => ({ agent: { id: id, status: "running", metadata: metadata[id] } }),
+        setMetadata: async (patch: unknown) => void writes.push([id, patch]),
+      }),
+    },
+  } as unknown as PaseoApi;
+  try {
+    const { inspections } = await inspectAgents({ agentIds: ["a-missing", "a-stale"] }, { paseo });
+    assert.deepEqual(
+      inspections.map((row) => [row.agentId, row.resumeScheduled]),
+      [["a-missing", true], ["a-stale", false]],
+    );
+  } finally {
+    if (previousHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previousHome;
+  }
+  assert.deepEqual(writes, [
+    ["a-missing", { "chat-resume.resume": { scheduleId: "s-new", at: "2026-11-17T10:00:00.000Z" } }],
+    ["a-stale", { "chat-resume.resume": null }],
+  ]);
 });

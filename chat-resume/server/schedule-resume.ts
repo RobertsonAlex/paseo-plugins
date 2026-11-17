@@ -4,6 +4,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
+import { RESUME_METADATA_KEY, reconcileResumeMarker, type ResumeMarker } from "../shared/resume-marker";
 import { CONTINUE_PROMPT, resumeAction } from "../shared/usage";
 import { inspectAgent } from "./inspect-usage";
 import { usageResetReader } from "./usage-reset";
@@ -74,6 +75,24 @@ export async function pendingResumeHeartbeats(directory = scheduleDirectory()): 
     }
   }
   return heartbeats;
+}
+
+/**
+ * Writes the agent's resume marker (`null` removes it). Best effort: the schedule store is the
+ * source of truth and inspect reconciles the marker, so a failed write is only logged.
+ * `setMetadata` (Paseo 0.16) is missing from the pinned `@getpaseo/client` types.
+ */
+export async function writeResumeMarker(
+  paseo: PaseoApi,
+  agentId: string,
+  patch: Record<string, ResumeMarker | null>,
+): Promise<void> {
+  try {
+    const handle = paseo.agents.ref(agentId) as unknown as { setMetadata(patch: unknown): Promise<void> };
+    await handle.setMetadata(patch);
+  } catch (error) {
+    console.error("[chat-resume] could not write the resume marker", agentId, error);
+  }
 }
 
 /** cmd.exe metacharacters. Escaping every one with ^ keeps cmd out of quote mode, so nothing is interpreted. */
@@ -237,6 +256,11 @@ async function createSchedule(agentId: string, paseo: PaseoApi): Promise<Schedul
     scheduleId: row.id,
     scheduledFor: row.nextRunAt ?? scheduledAt.toISOString(),
   };
+  await writeResumeMarker(
+    paseo,
+    agentId,
+    reconcileResumeMarker(null, { id: result.scheduleId, nextRunAt: result.scheduledFor }) ?? {},
+  );
   return result;
 }
 
@@ -257,11 +281,15 @@ export async function scheduleAgentResume(
 }
 
 /** Deletes the agent's pending resume heartbeats, so a manual continue is not followed by a scheduled one. */
-export async function cancelAgentResume(input: { agentId: string }): Promise<{ deleted: number }> {
+export async function cancelAgentResume(
+  input: { agentId: string },
+  context: { paseo: PaseoApi },
+): Promise<{ deleted: number }> {
   await pendingByAgent.get(input.agentId)?.catch(() => undefined);
   const heartbeats = (await pendingResumeHeartbeats()).filter((heartbeat) => heartbeat.agentId === input.agentId);
   for (const heartbeat of heartbeats) {
     await runPaseoJson(["heartbeat", "delete", heartbeat.id, "--json"], input.agentId);
   }
+  await writeResumeMarker(context.paseo, input.agentId, { [RESUME_METADATA_KEY]: null });
   return { deleted: heartbeats.length };
 }
